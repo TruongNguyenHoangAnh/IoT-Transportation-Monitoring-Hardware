@@ -40,6 +40,11 @@ const float SHOCK_G_THRESHOLD = 2.5f;
 const unsigned long TELEMETRY_INTERVAL_MS = 5000;
 static unsigned long last_ts = 0;
 
+// ===== Thông tin theo chủ đề ammo (chỉ dùng cho OUTPUT) =====
+static const char* VEHICLE_ID   = "VX-21";
+static const char* DEVICE_ID_TX = "ESP32-AMMO-IMU-001";
+static const char* COMPARTMENT  = "MAIN_BAY";
+
 // I2C helpers
 static void writeRegister(uint8_t device, uint8_t reg, uint8_t val) {
   Wire.beginTransmission(device);
@@ -76,24 +81,66 @@ void TaskADXL_Telem(void *pvParameters) {
   writeRegister(DEVICE_ADDRESS, REG_POWER_CTRL,  0x08); // Measure=1
   writeRegister(DEVICE_ADDRESS, REG_INT_ENABLE,  0x80); // Data Ready int (optional)
 
-  Serial.println("TELEM,ts,x,y,z,shock");
+  // ---- Banner theo chủ đề (thay cho header CSV cũ) ----
+  Serial.println("[AMMO-SYSTEM] ESP32 online – IoT monitoring for ammunition transport (ADXL345).");
+  Serial.print  ("[AMMO-SYSTEM] Route profile: VEHICLE=");
+  Serial.print(VEHICLE_ID);
+  Serial.print(", COMPARTMENT=");
+  Serial.print(COMPARTMENT);
+  Serial.print(", REPORT_INTERVAL=");
+  Serial.print(TELEMETRY_INTERVAL_MS);
+  Serial.println("ms");
 
   for (;;) {
     unsigned long now = millis();
     if (now - last_ts >= TELEMETRY_INTERVAL_MS) {
       last_ts = now;
+
       readXYZ_raw();
       float xg = raw_x * G_PER_LSB;
       float yg = raw_y * G_PER_LSB;
       float zg = raw_z * G_PER_LSB;
       float mag_g = sqrtf(xg*xg + yg*yg + zg*zg);
-      int shock = (mag_g >= SHOCK_G_THRESHOLD) ? 1 : 0;
-      Serial.print("TELEM,");
-      Serial.print(now); Serial.print(",");
-      Serial.print(raw_x); Serial.print(",");
-      Serial.print(raw_y); Serial.print(",");
-      Serial.print(raw_z); Serial.print(",");
-      Serial.println(shock);
+      bool shock = (mag_g >= SHOCK_G_THRESHOLD);
+
+      const char* status = shock ? "ALERT" : "OK";
+
+      // 1) Dòng log người đọc (giống format DHT đã chuẩn hoá)
+      Serial.print("[AMMO-TELEMETRY] ax_lsb=");
+      Serial.print(raw_x);
+      Serial.print(", ay_lsb=");
+      Serial.print(raw_y);
+      Serial.print(", az_lsb=");
+      Serial.print(raw_z);
+      Serial.print(", |a|_g=");
+      Serial.print(mag_g, 2);
+      Serial.print(", compartment=");
+      Serial.print(COMPARTMENT);
+      Serial.print(", status=");
+      Serial.println(status);
+
+      // 2) Dòng JSON một dòng (ready-to-ingest)
+      Serial.print("{\"type\":\"telemetry\",\"domain\":\"ammo_transport\"");
+      Serial.print(",\"vehicle_id\":\"");   Serial.print(VEHICLE_ID);   Serial.print("\"");
+      Serial.print(",\"device_id\":\"");    Serial.print(DEVICE_ID_TX);  Serial.print("\"");
+      Serial.print(",\"compartment\":\"");  Serial.print(COMPARTMENT);   Serial.print("\"");
+      Serial.print(",\"timestamp_ms\":");   Serial.print(now);
+      Serial.print(",\"accel\":{\"x_lsb\":"); Serial.print(raw_x);
+      Serial.print(",\"y_lsb\":");            Serial.print(raw_y);
+      Serial.print(",\"z_lsb\":");            Serial.print(raw_z);
+      Serial.print(",\"mag_g\":");            Serial.print(mag_g, 3);
+      Serial.print("}");
+      Serial.print(",\"status\":\"");       Serial.print(status);        Serial.print("\"");
+      Serial.println(",\"risk\":\"eval\"}");
+
+      // 3) Cảnh báo (nếu có)
+      if (shock) {
+        Serial.print("[AMMO-ALERT] Shock risk: |a|=");
+        Serial.print(mag_g, 2);
+        Serial.print(" g exceeds threshold ");
+        Serial.print(SHOCK_G_THRESHOLD, 2);
+        Serial.println(" g for ammunition transport.");
+      }
     }
     vTaskDelay(pdMS_TO_TICKS(10));
   }
