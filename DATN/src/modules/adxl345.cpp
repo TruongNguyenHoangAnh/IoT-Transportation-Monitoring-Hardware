@@ -1,28 +1,8 @@
 #include "adxl345.h"
+#include <math.h>
 
-ADXLModule::ADXLModule() {}
-
-bool ADXLModule::begin() {
-  if (!accel.begin()) {
-    return false;
-  }
-  accel.setRange(ADXL345_RANGE_16_G);
-  return true;
-}
-
-bool ADXLModule::read(float &x, float &y, float &z) {
-  sensors_event_t event;
-  accel.getEvent(&event);
-  if (isnan(event.acceleration.x) || isnan(event.acceleration.y) || isnan(event.acceleration.z)) return false;
-  x = event.acceleration.x;
-  y = event.acceleration.y;
-  z = event.acceleration.z;
-  return true;
-}
-
-// ---------------- I2C register helpers and telemetry task (inline, non-class) ----------------
-// Constants
-static const uint8_t DEVICE_ADDRESS = 0x53; // ADXL345 I2C
+// ---------- ADXL345 I2C ----------
+static const uint8_t DEVICE_ADDRESS = 0x53; // ALT ADDRESS = GND
 static const uint8_t REG_DATA_FORMAT = 0x31;
 static const uint8_t REG_POWER_CTRL  = 0x2D;
 static const uint8_t REG_INT_ENABLE  = 0x2E;
@@ -34,18 +14,23 @@ static const uint8_t REG_DATAY1 = 0x35;
 static const uint8_t REG_DATAZ0 = 0x36;
 static const uint8_t REG_DATAZ1 = 0x37;
 
-int16_t raw_x = 0, raw_y = 0, raw_z = 0;
-const float G_PER_LSB = 0.0039f; // full resolution ~4mg/LSB
-const float SHOCK_G_THRESHOLD = 2.5f;
-const unsigned long TELEMETRY_INTERVAL_MS = 5000;
+static int16_t x = 0, y = 0, z = 0;
+
+// Full-resolution: 4 mg/LSB ≈ 0.0039 g/LSB
+static const float G_PER_LSB = 0.0039f;
+// Ngưỡng sốc đơn giản theo magnitude |a| (g)
+static const float SHOCK_G_THRESHOLD = 2.5f;
+
+// Nhịp in telem
+static const unsigned long TELEMETRY_INTERVAL_MS = 1000;
 static unsigned long last_ts = 0;
 
 // ===== Thông tin theo chủ đề ammo (chỉ dùng cho OUTPUT) =====
 static const char* VEHICLE_ID   = "VX-21";
-static const char* DEVICE_ID_TX = "ESP32-AMMO-IMU-001";
+static const char* DEVICE_ID    = "ESP32-AMMO-IMU-001";
 static const char* COMPARTMENT  = "MAIN_BAY";
 
-// I2C helpers
+// ---------- I2C helpers ----------
 static void writeRegister(uint8_t device, uint8_t reg, uint8_t val) {
   Wire.beginTransmission(device);
   Wire.write(reg);
@@ -65,23 +50,60 @@ static void readRegister(uint8_t device, uint8_t startReg, uint8_t numBytes, uin
   }
 }
 
-static void readXYZ_raw() {
+// Đọc 6 byte và ghép thành x,y,z (signed 16-bit, little endian)
+static void readXYZ() {
   uint8_t buf[6];
   readRegister(DEVICE_ADDRESS, REG_DATAX0, 6, buf);
-  raw_x = (int16_t)((int16_t)buf[1] << 8 | buf[0]);
-  raw_y = (int16_t)((int16_t)buf[3] << 8 | buf[2]);
-  raw_z = (int16_t)((int16_t)buf[5] << 8 | buf[4]);
+  x = (int16_t)((int16_t)buf[1] << 8 | buf[0]);
+  y = (int16_t)((int16_t)buf[3] << 8 | buf[2]);
+  z = (int16_t)((int16_t)buf[5] << 8 | buf[4]);
 }
 
-// Telemetry task to be created externally if desired
+// === Class implementation (using direct I2C) ===
+ADXLModule::ADXLModule() {}
+
+bool ADXLModule::begin() {
+  // Try Adafruit lib first
+  if (accel.begin()) {
+    accel.setRange(ADXL345_RANGE_16_G);
+    return true;
+  }
+
+  // Fallback: direct I2C init
+  Wire.begin();
+  writeRegister(DEVICE_ADDRESS, REG_DATA_FORMAT, 0x0B); // FULL_RES=1, Range=±16g
+  writeRegister(DEVICE_ADDRESS, REG_POWER_CTRL,  0x08); // Measure=1
+  writeRegister(DEVICE_ADDRESS, REG_INT_ENABLE,  0x80); // Data Ready int (optional)
+  return true;
+}
+
+bool ADXLModule::read(float &xg, float &yg, float &zg) {
+  // Try Adafruit lib first
+  sensors_event_t event;
+  accel.getEvent(&event);
+  if (!isnan(event.acceleration.x) && !isnan(event.acceleration.y) && !isnan(event.acceleration.z)) {
+    xg = event.acceleration.x;
+    yg = event.acceleration.y;
+    zg = event.acceleration.z;
+    return true;
+  }
+
+  // Fallback: direct I2C read
+  readXYZ();
+  xg = x * G_PER_LSB;
+  yg = y * G_PER_LSB;
+  zg = z * G_PER_LSB;
+  return true;
+}
+
+// === Telemetry task (using direct I2C) ===
 void TaskADXL_Telem(void *pvParameters) {
   Wire.begin();
-  // init ADXL345 via I2C raw registers as fallback
   writeRegister(DEVICE_ADDRESS, REG_DATA_FORMAT, 0x0B); // FULL_RES=1, Range=±16g
   writeRegister(DEVICE_ADDRESS, REG_POWER_CTRL,  0x08); // Measure=1
   writeRegister(DEVICE_ADDRESS, REG_INT_ENABLE,  0x80); // Data Ready int (optional)
 
-  // ---- Banner theo chủ đề (thay cho header CSV cũ) ----
+  // Banner theo chủ đề
   Serial.println("[AMMO-SYSTEM] ESP32 online – IoT monitoring for ammunition transport (ADXL345).");
   Serial.print  ("[AMMO-SYSTEM] Route profile: VEHICLE=");
   Serial.print(VEHICLE_ID);
@@ -96,22 +118,26 @@ void TaskADXL_Telem(void *pvParameters) {
     if (now - last_ts >= TELEMETRY_INTERVAL_MS) {
       last_ts = now;
 
-      readXYZ_raw();
-      float xg = raw_x * G_PER_LSB;
-      float yg = raw_y * G_PER_LSB;
-      float zg = raw_z * G_PER_LSB;
+      // Đọc cảm biến
+      readXYZ();
+
+      // Tính magnitude |a| để phát hiện shock (đơn giản)
+      float xg = x * G_PER_LSB;
+      float yg = y * G_PER_LSB;
+      float zg = z * G_PER_LSB;
       float mag_g = sqrtf(xg*xg + yg*yg + zg*zg);
       bool shock = (mag_g >= SHOCK_G_THRESHOLD);
 
+      // ---- OUTPUT giống phong cách DHT11 đã chuẩn hoá ----
       const char* status = shock ? "ALERT" : "OK";
 
-      // 1) Dòng log người đọc (giống format DHT đã chuẩn hoá)
+      // 1) Dòng log người đọc
       Serial.print("[AMMO-TELEMETRY] ax_lsb=");
-      Serial.print(raw_x);
+      Serial.print(x);
       Serial.print(", ay_lsb=");
-      Serial.print(raw_y);
+      Serial.print(y);
       Serial.print(", az_lsb=");
-      Serial.print(raw_z);
+      Serial.print(z);
       Serial.print(", |a|_g=");
       Serial.print(mag_g, 2);
       Serial.print(", compartment=");
@@ -119,18 +145,18 @@ void TaskADXL_Telem(void *pvParameters) {
       Serial.print(", status=");
       Serial.println(status);
 
-      // 2) Dòng JSON một dòng (ready-to-ingest)
+      // 2) Dòng JSON một dòng (sẵn sàng đưa lên server/MQTT)
       Serial.print("{\"type\":\"telemetry\",\"domain\":\"ammo_transport\"");
       Serial.print(",\"vehicle_id\":\"");   Serial.print(VEHICLE_ID);   Serial.print("\"");
-      Serial.print(",\"device_id\":\"");    Serial.print(DEVICE_ID_TX);  Serial.print("\"");
-      Serial.print(",\"compartment\":\"");  Serial.print(COMPARTMENT);   Serial.print("\"");
+      Serial.print(",\"device_id\":\"");    Serial.print(DEVICE_ID);    Serial.print("\"");
+      Serial.print(",\"compartment\":\"");  Serial.print(COMPARTMENT);  Serial.print("\"");
       Serial.print(",\"timestamp_ms\":");   Serial.print(now);
-      Serial.print(",\"accel\":{\"x_lsb\":"); Serial.print(raw_x);
-      Serial.print(",\"y_lsb\":");            Serial.print(raw_y);
-      Serial.print(",\"z_lsb\":");            Serial.print(raw_z);
+      Serial.print(",\"accel\":{\"x_lsb\":"); Serial.print(x);
+      Serial.print(",\"y_lsb\":");            Serial.print(y);
+      Serial.print(",\"z_lsb\":");            Serial.print(z);
       Serial.print(",\"mag_g\":");            Serial.print(mag_g, 3);
       Serial.print("}");
-      Serial.print(",\"status\":\"");       Serial.print(status);        Serial.print("\"");
+      Serial.print(",\"status\":\"");       Serial.print(status);       Serial.print("\"");
       Serial.println(",\"risk\":\"eval\"}");
 
       // 3) Cảnh báo (nếu có)

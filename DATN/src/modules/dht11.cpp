@@ -27,7 +27,12 @@ static const float AMMO_HUM_CLEAR_P  = 75.0f; // thoát cảnh báo ẩm (hyster
 static const int WARMUP_SAMPLES = 2;
 
 // Throttle: in/publish cảnh báo tối đa 1 lần mỗi khoảng này (ms)
-static const unsigned long ALERT_MIN_INTERVAL_MS = 30000UL;
+static const unsigned long ALERT_MIN_INTERVAL_MS = 500UL;
+
+// Throttle telemetry print: only print human/JSON telemetry every N readings
+// (read interval currently 5s in TaskDHT11 -> N=12 => ~60s between prints)
+static const uint8_t TELEMETRY_PRINT_EVERY_N = 1; // Print every reading for debugging
+static int telemetryPrintCounter = 0;
 
 // ===== Trạng thái cảnh báo =====
 static bool thermalAlertActive  = false;
@@ -129,9 +134,15 @@ void TaskDHT11(void *pvParameters) {
 
     if (isnan(h) || isnan(t)) {
       Serial.println("[AMMO-ERROR] DHT offline or read failure – unable to verify ammunition cargo environment.");
+      Serial.print("Debug: Humidity="); Serial.println(h);
+      Serial.print("Debug: Temperature="); Serial.println(t);
       vTaskDelay(pdMS_TO_TICKS(5000));
       continue;
     }
+
+    Serial.println("[DEBUG] DHT11 reading successful.");
+    Serial.print("Temperature: "); Serial.println(t);
+    Serial.print("Humidity: "); Serial.println(h);
 
     // Bỏ qua N mẫu đầu (warmup)
     if (sampleCount < WARMUP_SAMPLES) {
@@ -161,11 +172,14 @@ void TaskDHT11(void *pvParameters) {
     // ==== Tính status tổng hợp cho TELEMETRY/JSON ====
     const char* status = (thermalAlertActive || humidityAlertActive) ? "ALERT" : "OK";
 
-    // 1) Log người đọc
-    printTelemetryHuman(t, h, status);
-
-    // 2) JSON cho máy đọc + publish MQTT (nếu có)
-    printTelemetryJSON(t, h, status);
+    // 1) Log người đọc + JSON cho máy đọc (throttled to reduce terminal spam)
+    telemetryPrintCounter++;
+    if (TELEMETRY_PRINT_EVERY_N == 0 || (telemetryPrintCounter % TELEMETRY_PRINT_EVERY_N) == 0) {
+      printTelemetryHuman(t, h, status);
+      printTelemetryJSON(t, h, status);
+      // avoid counter overflow
+      if (telemetryPrintCounter > 1000000) telemetryPrintCounter = 0;
+    }
 
     // 3) In cảnh báo (throttle + edge trigger)
     bool edgeThermal  = (!prevThermal  && thermalAlertActive);
