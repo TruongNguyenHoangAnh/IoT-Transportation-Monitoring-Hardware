@@ -6,6 +6,7 @@
 #include "modules/dht11.h"
 #include "modules/adxl345.h"
 #include "modules/local_memory.h"   // SD logging
+#include "include/sensor_Data.h"
 // #include "modules/lora.h"      // <-- bỏ wrapper LoRa AT (không cần)
 
 //
@@ -30,104 +31,145 @@ ADXLModule adxl; // ADXL345
 
 HardwareSerial LORA_SER(1); // UART1
 
-volatile uint32_t g_send_interval_ms = 2000; // mặc định 60s (giảm tần suất gửi/print)
-static uint32_t _seq = 0;
+struct __attribute__((packed)) LoraPacket {
+    uint8_t device_id = 1;
+    int32_t lat_fixed;
+    int32_t lng_fixed;
+    uint8_t temp;
+    uint8_t hum;
+    uint8_t flags;
+    uint16_t msg_id;
+};
 
-// ---- LED heartbeat task ----
-void TaskLED(void *pvParameters) {
-  pinMode(LED_PIN, OUTPUT);
-  bool on = false;
+bool waitResponse(const char* expected, uint32_t timeout) {
+  uint32_t start = millis();
+  String response = "";
+  while (millis() - start < timeout) {
+    while (LORA_SER.available()) {
+      char c = LORA_SER.read();
+      response += c;
+    }
+    if (response.indexOf(expected) != -1) {
+      return true; // Tìm thấy chuỗi mong muốn (ví dụ "OK" hoặc "Done")
+    }
+    vTaskDelay(10);
+  }
+  return false; // Timeout
+}
+
+void sendCommandWithRetry(String cmd, int maxRetries) {
+  for (int i = 1; i <= maxRetries; i++) {
+    // 1. Xóa bộ đệm cũ
+    while(LORA_SER.available()) LORA_SER.read();
+    
+    // 2. Gửi lệnh
+    LORA_SER.println(cmd);
+    Serial.printf("[LoRa] Sending attempt %d/%d...\n", i, maxRetries);
+
+    // 3. Chờ xác nhận (Ví dụ chờ "OK" hoặc "TX DONE" trong 3 giây)
+    // Tùy firmware, lệnh gửi thường trả về "OK" ngay, sau đó mới "TX DONE"
+    if (waitResponse("OK", 3000)) {
+       Serial.println("[LoRa] Send Command OK!");
+       // Nếu muốn chắc chắn gói tin đi thành công thì chờ thêm "TX DONE"
+       // if (waitResponse("TX DONE", 5000)) Serial.println("Packet Arrived!");
+       return; // Gửi thành công, thoát hàm
+    } else {
+       Serial.println("[LoRa] Timeout/Error! Retrying...");
+       vTaskDelay(1000 + random(500)); // Nghỉ 1 chút rồi thử lại (Backoff)
+    }
+  }
+  Serial.println("[LoRa] FAILED after all retries.");
+}
+
+// ---- Task Gửi LoRa ----
+void TaskLoraSend(void *pv) {
+  LORA_SER.begin(LORA_BAUD, SERIAL_8N1, LORA_RX, LORA_TX);
+  delay(1000);
+  
+  // Cấu hình ban đầu cho LoRa (chạy 1 lần)
+  // sendCommandWithRetry("AT+CJOIN=1,0,10,8", 3); // Ví dụ lệnh Join
+
+  LoraPacket pkt;
+  uint16_t seq_counter = 0;
+
   for (;;) {
-    digitalWrite(LED_PIN, on ? HIGH : LOW);
-    on = !on;
-    // giảm tần suất nhấp LED để giảm output/hoạt động
-    vTaskDelay(pdMS_TO_TICKS(5000)); // 5s
+    bool hasData = false;
+
+    // 1. LẤY DỮ LIỆU TỪ KHO
+    if (xSemaphoreTake(sysDataMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        pkt.device_id = 1;
+        pkt.lat_fixed = (int32_t)(sensorData.lat * 100000);
+        pkt.lng_fixed = (int32_t)(sensorData.lng * 100000);
+        pkt.temp      = (uint8_t)sensorData.temp;
+        pkt.hum       = (uint8_t)sensorData.hum;
+        
+        pkt.flags = 0;
+        if (sensorData.shock_detected) pkt.flags |= 1;
+        if (sensorData.is_moving)      pkt.flags |= 2;
+        
+        sensorData.shock_detected = false; 
+        pkt.msg_id = seq_counter++;
+        
+        hasData = true;
+        xSemaphoreGive(sysDataMutex);
+    }
+
+    if (hasData) {
+        // 2. CHUẨN BỊ CHUỖI HEX
+        char hexBuffer[64];
+        char *ptr = hexBuffer;
+        uint8_t *bytes = (uint8_t*)&pkt;
+        for (int i = 0; i < sizeof(LoraPacket); i++) {
+            ptr += sprintf(ptr, "%02X", bytes[i]);
+        }
+
+        // 3. GỬI VỚI CƠ CHẾ RETRY (3 LẦN)
+        // Lệnh: AT+DTRX=[confirm],[nbtrials],[len],<data>
+        // nbtrials=1 (để mình tự quản lý retry bằng code này cho chắc)
+        String cmd = "AT+DTRX=1,1,15," + String(hexBuffer); 
+        
+        sendCommandWithRetry(cmd, 3); 
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(2000)); // Gửi mỗi 2 giây
   }
 }
 
-// ---- Sender task: read sensors, build JSON, write to LORA_SER ----
-void TaskLoraSend(void *pv) {
-  // init LORA UART (ESP32 UART1: rxPin, txPin)
-  LORA_SER.begin(LORA_BAUD, SERIAL_8N1, LORA_RX, LORA_TX);
-  delay(50);
-  // flush if any
-  while (LORA_SER.available()) LORA_SER.read();
-
-  // only print debug to Serial every N sends to reduce terminal spam
-  const uint8_t DEBUG_PRINT_EVERY_N = 10; // change as needed
-
+// ---- Các phần khác giữ nguyên ----
+void TaskLED(void *pvParameters) {
+  pinMode(LED_PIN, OUTPUT);
   for (;;) {
-    // read sensors
-    float temp = dht.readTemperature();
-    float hum  = dht.readHumidity();
-    float ax = NAN, ay = NAN, az = NAN;
-    adxl.read(ax, ay, az);
-
-    // build JSON payload for LoRa
-    uint32_t ts = millis();
-    char payload[256];
-    int n = snprintf(payload, sizeof(payload),
-      "{\"device_id\":\"Ra-08H-Node1\",\"timestamp\":%lu,\"temp\":%.2f,\"battery\":%.2f,\"gps\":{\"lat\":%.4f,\"lng\":%.4f},\"rssi_lora\":%d}\n",
-      (unsigned long)ts,
-      isnan(temp) ? -999.0F : temp,
-      4.0, // Replace with actual battery voltage if available
-      gps.latitude(),
-      gps.longitude(),
-      -73 // Replace with actual RSSI value if available
-    );
-
-    // write to LoRa module UART
-    LORA_SER.write((uint8_t*)payload, n);
-    LORA_SER.flush(); // optional
-
-    // debug on main Serial
-    if ((DEBUG_PRINT_EVERY_N > 0) && ((_seq % DEBUG_PRINT_EVERY_N) == 0)) {
-      Serial.print("[ESP32->LORA] "); Serial.print(payload);
-    }
-
-    // wait interval (can be updated by other mechanism if needed)
-    vTaskDelay(pdMS_TO_TICKS(g_send_interval_ms));
+    digitalWrite(LED_PIN, !digitalRead(LED_PIN));
+    vTaskDelay(pdMS_TO_TICKS(1000));
   }
 }
 
 void setup() {
   Serial.begin(115200);
-  delay(2000);
-  Serial.println("DATN: initializing modules...");
-
-  // I2C cho ADXL345
+  
+  sysDataMutex = xSemaphoreCreateMutex(); // QUAN TRỌNG
+  
   Wire.begin();
-
-  // sensor init
   dht.begin();
-  if (!adxl.begin()) {
-    Serial.println("Warning: ADXL345 not found (check wiring)");
-  }
-
-  // Tasks
-  xTaskCreate(TaskLED,         "LED",        1024, NULL, 1, NULL);
-  startDhtTask(2048, 1);        // nếu bạn có
-  startAdxlTelemetry(4096, 1);  // nếu bạn có
-
-  // create Lora sender task
-  xTaskCreate(TaskLoraSend, "LoraSend", 4096, NULL, 1, NULL);
-
-  // GPS
+  if (!adxl.begin()) Serial.println("ADXL error");
   gps.begin();
+
+  xTaskCreate(TaskLED, "LED", 1024, NULL, 1, NULL);
+  startDhtTask(2048, 1);
+  startAdxlTelemetry(4096, 1);
+  xTaskCreate(TaskLoraSend, "LoraSend", 4096, NULL, 1, NULL);
 }
 
 void loop() {
-  // ---- Cập nhật GPS ----
   gps.read();
-
-  // ---- Debug print GPS occasionally (ví dụ mỗi 60s) ----
-  static uint32_t last_gps_print = 0;
-  uint32_t now = millis();
-  if (now - last_gps_print >= 60000) { // 60000 ms = 60s
-    gps.printLocation();
-    last_gps_print = now;
+  if (gps.gpsObject().location.isUpdated()) {
+      if (xSemaphoreTake(sysDataMutex, 10) == pdTRUE) {
+          sensorData.lat  = gps.latitude();
+          sensorData.lng  = gps.longitude();
+          sensorData.sats = gps.satellites();
+          sensorData.speed = gps.gpsObject().speed.kmph();
+          xSemaphoreGive(sysDataMutex);
+      }
   }
-
-  // yield to tasks
-  vTaskDelay(pdMS_TO_TICKS(1000));
+  vTaskDelay(1);
 }

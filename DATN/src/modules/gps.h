@@ -1,3 +1,6 @@
+#ifndef GPS_NEO6M_H
+#define GPS_NEO6M_H
+
 #pragma once
 #include <TinyGPSPlus.h>
 #include <HardwareSerial.h>
@@ -12,6 +15,10 @@ public:
   // Debug
   void printLocation();
   void printTimestamp();
+
+  TinyGPSPlus& gpsObject(){ 
+        return _gps; 
+    }
 
   // Getter KHÔNG const (TinyGPS++ methods are non-const)
   inline bool     updated()     { return _gps.location.isUpdated(); }
@@ -29,3 +36,5 @@ private:
   HardwareSerial _serial;
   TinyGPSPlus _gps;
 };
+
+#endif
