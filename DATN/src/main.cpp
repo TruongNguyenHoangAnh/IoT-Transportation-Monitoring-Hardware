@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include <TinyGPSPlus.h>
+#include <esp_system.h>   // For chip ID functions
 
 #include "modules/gps.h"
 #include "modules/dht11.h"
@@ -46,6 +47,7 @@ static uint32_t _seq = 0;
 // ---- Helper: Detect node_id from LoRa TX OR generate from Chip ID ----
 // Try to listen for LoRa TX startup message "[LORA-NODE-ID] XYZ"
 // If timeout, fallback to generating unique node_id from ESP32 Chip ID
+// Lưu node_id vào EEPROM để tái sử dụng lần sau
 void detectOrGenerateNodeId(HardwareSerial &lora_uart) {
   Serial.println("[DETECT] Listening for LoRa node_id (3 seconds)...");
   
@@ -69,6 +71,10 @@ void detectOrGenerateNodeId(HardwareSerial &lora_uart) {
             uint8_t node_id = (uint8_t)atoi(start_ptr + 1);
             Serial.printf("[DETECT] Found node_id from LoRa TX = %d\r\n", node_id);
             gVehicleConfig.setDeviceIdFromNodeId(node_id);
+            // Save to EEPROM for next boot
+            EEPROM.write(0, node_id);
+            EEPROM.commit();
+            Serial.printf("[DETECT] Saved node_id %d to EEPROM\r\n", node_id);
             return;  // ✅ Success
           }
         }
@@ -82,26 +88,36 @@ void detectOrGenerateNodeId(HardwareSerial &lora_uart) {
     delayMicroseconds(100);
   }
   
-  // ✅ FALLBACK: Generate node_id from ESP32 Chip ID (Option A)
+  // ===== FALLBACK 1: Check EEPROM for saved node_id =====
+  uint8_t saved_node_id = EEPROM.read(0);
+  if (saved_node_id != 0 && saved_node_id != 0xFF) {
+    Serial.printf("[DETECT] Found saved node_id in EEPROM = %d\r\n", saved_node_id);
+    gVehicleConfig.setDeviceIdFromNodeId(saved_node_id);
+    return;  // ✅ Use saved ID
+  }
+  
+  // ===== FALLBACK 2: Generate from ESP32 Chip ID & save to EEPROM =====
   Serial.println("[DETECT] LoRa node_id timeout, generating from Chip ID...");
   
-  uint32_t chipId[2];
-  esp_efuse_mac_get_default((uint8_t*) chipId);
-  
-  // Derive unique Node ID from ChipId by XORing all bytes
   uint8_t node_id = 0;
-  node_id ^= (chipId[0] >> 0) & 0xFF;
-  node_id ^= (chipId[0] >> 8) & 0xFF;
-  node_id ^= (chipId[0] >> 16) & 0xFF;
-  node_id ^= (chipId[0] >> 24) & 0xFF;
-  node_id ^= (chipId[1] >> 0) & 0xFF;
-  node_id ^= (chipId[1] >> 8) & 0xFF;
-  node_id ^= (chipId[1] >> 16) & 0xFF;
-  node_id ^= (chipId[1] >> 24) & 0xFF;
+  
+  // Read MAC address (6 bytes) from factory efuse
+  uint8_t chipId_bytes[6] = {0};
+  esp_read_mac(chipId_bytes, ESP_MAC_WIFI_STA);
+  
+  // Derive unique Node ID from MAC bytes by XORing all
+  for (int i = 0; i < 6; i++) {
+    node_id ^= chipId_bytes[i];
+  }
   
   if (node_id == 0) node_id = 1;  // Avoid 0
   
   Serial.printf("[DETECT] Generated node_id from Chip ID = %d\r\n", node_id);
+  // Save to EEPROM for next boot
+  EEPROM.write(0, node_id);
+  EEPROM.commit();
+  Serial.printf("[DETECT] Saved node_id %d to EEPROM\r\n", node_id);
+  
   gVehicleConfig.setDeviceIdFromNodeId(node_id);
 }
 
@@ -215,6 +231,9 @@ void TaskLoraSend(void *pv) {
 void setup() {
   Serial.begin(115200);
   delay(2000);
+  
+  // Initialize EEPROM (needed for stable node_id storage)
+  EEPROM.begin(512);
   
   Serial.printf("\r\n");
   Serial.printf("╔═══════════════════════════════════════════════════════╗\r\n");
