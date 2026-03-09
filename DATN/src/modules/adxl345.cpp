@@ -1,5 +1,9 @@
 #include "adxl345.h"
+#include "vehicle_config.h"
 #include <math.h>
+
+// Declare external vehicle config (initialized in main.cpp)
+extern VehicleConfig gVehicleConfig;
 
 // ---------- ADXL345 I2C ----------
 static const uint8_t DEVICE_ADDRESS = 0x53; // ALT ADDRESS = GND
@@ -26,7 +30,7 @@ static const unsigned long TELEMETRY_INTERVAL_MS = 1000;
 static unsigned long last_ts = 0;
 
 // ===== Thông tin theo chủ đề ammo (chỉ dùng cho OUTPUT) =====
-static const char* VEHICLE_ID   = "VX-21";
+// VEHICLE_ID is now dynamic from gVehicleConfig.getDeviceId()
 static const char* DEVICE_ID    = "ESP32-AMMO-IMU-001";
 static const char* COMPARTMENT  = "MAIN_BAY";
 
@@ -66,6 +70,7 @@ bool ADXLModule::begin() {
   // Try Adafruit lib first
   if (accel.begin()) {
     accel.setRange(ADXL345_RANGE_16_G);
+    delay(50);  // Wait for Adafruit init
     return true;
   }
 
@@ -73,6 +78,7 @@ bool ADXLModule::begin() {
   Wire.begin();
   writeRegister(DEVICE_ADDRESS, REG_DATA_FORMAT, 0x0B); // FULL_RES=1, Range=±16g
   writeRegister(DEVICE_ADDRESS, REG_POWER_CTRL,  0x08); // Measure=1
+  delay(100);  // Critical: wait for sensor to boot
   writeRegister(DEVICE_ADDRESS, REG_INT_ENABLE,  0x80); // Data Ready int (optional)
   return true;
 }
@@ -96,22 +102,31 @@ bool ADXLModule::read(float &xg, float &yg, float &zg) {
   return true;
 }
 
+// Get raw LSB values
+void ADXLModule::getRawLSB(int16_t &x_lsb, int16_t &y_lsb, int16_t &z_lsb) {
+  readXYZ();
+  x_lsb = x;
+  y_lsb = y;
+  z_lsb = z;
+}
+
 // === Telemetry task (using direct I2C) ===
 void TaskADXL_Telem(void *pvParameters) {
   Wire.begin();
   writeRegister(DEVICE_ADDRESS, REG_DATA_FORMAT, 0x0B); // FULL_RES=1, Range=±16g
   writeRegister(DEVICE_ADDRESS, REG_POWER_CTRL,  0x08); // Measure=1
+  delay(100); // Wait for sensor to be ready (CRITICAL!)
   writeRegister(DEVICE_ADDRESS, REG_INT_ENABLE,  0x80); // Data Ready int (optional)
 
   // Banner theo chủ đề
-  Serial.println("[AMMO-SYSTEM] ESP32 online – IoT monitoring for ammunition transport (ADXL345).");
-  Serial.print  ("[AMMO-SYSTEM] Route profile: VEHICLE=");
-  Serial.print(VEHICLE_ID);
-  Serial.print(", COMPARTMENT=");
-  Serial.print(COMPARTMENT);
-  Serial.print(", REPORT_INTERVAL=");
-  Serial.print(TELEMETRY_INTERVAL_MS);
-  Serial.println("ms");
+  // Serial.println("[AMMO-SYSTEM] ESP32 online – IoT monitoring for ammunition transport (ADXL345).");
+  // Serial.print  ("[AMMO-SYSTEM] Route profile: VEHICLE=");
+  // Serial.print(VEHICLE_ID);
+  // Serial.print(", COMPARTMENT=");
+  // Serial.print(COMPARTMENT);
+  // Serial.print(", REPORT_INTERVAL=");
+  // Serial.print(TELEMETRY_INTERVAL_MS);
+  // Serial.println("ms");
 
   for (;;) {
     unsigned long now = millis();
@@ -131,23 +146,23 @@ void TaskADXL_Telem(void *pvParameters) {
       // ---- OUTPUT giống phong cách DHT11 đã chuẩn hoá ----
       const char* status = shock ? "ALERT" : "OK";
 
-      // 1) Dòng log người đọc
-      Serial.print("[AMMO-TELEMETRY] ax_lsb=");
-      Serial.print(x);
-      Serial.print(", ay_lsb=");
-      Serial.print(y);
-      Serial.print(", az_lsb=");
-      Serial.print(z);
-      Serial.print(", |a|_g=");
-      Serial.print(mag_g, 2);
-      Serial.print(", compartment=");
-      Serial.print(COMPARTMENT);
-      Serial.print(", status=");
-      Serial.println(status);
+      // 1) Dòng log người đọc (COMMENTED OUT - verbose)
+      // Serial.print("[AMMO-TELEMETRY] ax_lsb=");
+      // Serial.print(x);
+      // Serial.print(", ay_lsb=");
+      // Serial.print(y);
+      // Serial.print(", az_lsb=");
+      // Serial.print(z);
+      // Serial.print(", |a|_g=");
+      // Serial.print(mag_g, 2);
+      // Serial.print(", compartment=");
+      // Serial.print(COMPARTMENT);
+      // Serial.print(", status=");
+      // Serial.println(status);
 
       // 2) Dòng JSON một dòng (sẵn sàng đưa lên server/MQTT)
       Serial.print("{\"type\":\"telemetry\",\"domain\":\"ammo_transport\"");
-      Serial.print(",\"vehicle_id\":\"");   Serial.print(VEHICLE_ID);   Serial.print("\"");
+      Serial.print(",\"vehicle_id\":\"" );   Serial.print(gVehicleConfig.getDeviceId());   Serial.print("\"");
       Serial.print(",\"device_id\":\"");    Serial.print(DEVICE_ID);    Serial.print("\"");
       Serial.print(",\"compartment\":\"");  Serial.print(COMPARTMENT);  Serial.print("\"");
       Serial.print(",\"timestamp_ms\":");   Serial.print(now);
@@ -157,7 +172,7 @@ void TaskADXL_Telem(void *pvParameters) {
       Serial.print(",\"mag_g\":");            Serial.print(mag_g, 3);
       Serial.print("}");
       Serial.print(",\"status\":\"");       Serial.print(status);       Serial.print("\"");
-      Serial.println(",\"risk\":\"eval\"}");
+      Serial.println("}");
 
       // 3) Cảnh báo (nếu có)
       if (shock) {

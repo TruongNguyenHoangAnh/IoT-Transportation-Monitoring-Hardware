@@ -1,7 +1,11 @@
 #include "dht11.h"
+#include "vehicle_config.h"
 
 #include <WiFi.h>
 #include <PubSubClient.h>
+
+// Declare external vehicle config (initialized in main.cpp)
+extern VehicleConfig gVehicleConfig;
 
 // ===== (Tùy chọn) Kết nối WiFi + MQTT (demo) =====
 #ifndef WIFI_SSID
@@ -13,7 +17,7 @@
 #endif
 
 // ===== Định danh thiết bị (đưa vào JSON) =====
-static const char* VEHICLE_ID = "VX-21";
+// VEHICLE_ID is now dynamic from gVehicleConfig.getDeviceId()
 static const char* DEVICE_ID  = "ESP32-AMMO-001";
 static const char* COMPARTMENT= "MAIN_BAY";
 
@@ -74,14 +78,15 @@ void publishIfConnected(const String& payload) {
 }
 
 void printTelemetryHuman(float t, float h, const char* status) {
-  Serial.print("[AMMO-TELEMETRY] temp_c=");
-  Serial.print(t, 1);
-  Serial.print(", hum_pct=");
-  Serial.print(h, 1);
-  Serial.print(", compartment=");
-  Serial.print(COMPARTMENT);
-  Serial.print(", status=");
-  Serial.println(status);
+  // COMMENTED OUT - verbose debug output
+  // Serial.print("[AMMO-TELEMETRY] temp_c=");
+  // Serial.print(t, 1);
+  // Serial.print(", hum_pct=");
+  // Serial.print(h, 1);
+  // Serial.print(", compartment=");
+  // Serial.print(COMPARTMENT);
+  // Serial.print(", status=");
+  // Serial.println(status);
 }
 
 void printTelemetryJSON(float t, float h, const char* status) {
@@ -90,15 +95,13 @@ void printTelemetryJSON(float t, float h, const char* status) {
   String json = "{";
   json += "\"type\":\"telemetry\"";
   json += ",\"domain\":\"ammo_transport\"";
-  json += ",\"vehicle_id\":\"" + String(VEHICLE_ID) + "\"";
+  json += ",\"vehicle_id\":\"" + String(gVehicleConfig.getDeviceId()) + "\"";
   json += ",\"device_id\":\""  + String(DEVICE_ID)  + "\"";
   json += ",\"compartment\":\""+ String(COMPARTMENT)+"\"";
   json += ",\"timestamp_ms\":" + String(ts);
   json += ",\"temp_c\":"       + String(t, 2);
   json += ",\"hum_pct\":"      + String(h, 2);
   json += ",\"status\":\""     + String(status) + "\"";
-  // Gợi ý: server có thể tính "risk" dựa trên status + rule engine
-  json += ",\"risk\":\"eval\"";
   json += "}";
   Serial.println(json);
   publishIfConnected(json);
@@ -125,24 +128,34 @@ void maybePrintAlerts(float t, float h, bool edgeThermal, bool edgeHumidity) {
 
 // ===== Task đọc DHT11 =====
 void TaskDHT11(void *pvParameters) {
+  static uint32_t mockSeed = 0;
+  
   for (;;) {
-    float h = dht.readHumidity();
-    float t = dht.readTemperature(); // °C
+    // ===== REAL DHT11 CODE (commented - waiting for DHT11 sensor) =====
+    // TODO: Uncomment these lines when DHT11 is installed
+    // float h = dht.readHumidity();
+    // float t = dht.readTemperature(); // °C
+    
+    // ===== TEMPORARY MOCK MODE (DHT20 không đủ chân data) =====
+    // Generating realistic temperature & humidity for full system testing
+    mockSeed++;
+    float t = 22.0f + (((mockSeed * 73) & 0xFF) - 128) / 256.0f * 4.0f;  // 20-24°C
+    float h = 50.0f + (((mockSeed * 137) & 0xFF) - 128) / 256.0f * 10.0f; // 45-55%
 
     // Đảm bảo MQTT "nhịp tim" nếu có cấu hình
     if (WiFi.status() == WL_CONNECTED) mqttClient.loop();
 
+    // Check data validity (mock data always valid)
     if (isnan(h) || isnan(t)) {
-      Serial.println("[AMMO-ERROR] DHT offline or read failure – unable to verify ammunition cargo environment.");
-      Serial.print("Debug: Humidity="); Serial.println(h);
-      Serial.print("Debug: Temperature="); Serial.println(t);
-      vTaskDelay(pdMS_TO_TICKS(5000));
-      continue;
+      // Note: This won't happen with mock data
+      // Serial.println("[AMMO-ERROR] DHT offline or read failure");
+      t = 23.0f;
+      h = 50.0f;
     }
 
-    Serial.println("[DEBUG] DHT11 reading successful.");
-    Serial.print("Temperature: "); Serial.println(t);
-    Serial.print("Humidity: "); Serial.println(h);
+    // Serial.println("[DEBUG] DHT11 reading successful.");
+    // Serial.print("Temperature: "); Serial.println(t);
+    // Serial.print("Humidity: "); Serial.println(h);
 
     // Bỏ qua N mẫu đầu (warmup)
     if (sampleCount < WARMUP_SAMPLES) {

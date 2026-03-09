@@ -8,7 +8,6 @@
 #include "modules/ldr.h"
 #include "modules/vehicle_config.h"
 #include "modules/local_memory.h"   // SD logging
-#include "modules/sensor_Data.h"    // Shared sensor data struct + mutex
 // #include "modules/lora.h"      // <-- bỏ wrapper LoRa AT (không cần)
 
 //
@@ -165,16 +164,6 @@ void TaskLoraSend(void *pv) {
     uint16_t light_level = ldr.readSmoothed();
     bool is_tamper = ldr.getTamperState();
 
-    // read GPS from shared sensorData struct (thread-safe)
-    double lat = 0.0, lng = 0.0;
-    uint32_t sats = 0;
-    if (xSemaphoreTake(sensorDataMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
-      lat = sensorData.lat;
-      lng = sensorData.lng;
-      sats = sensorData.sats;
-      xSemaphoreGive(sensorDataMutex);
-    }
-
     // build JSON payload for LoRa
     uint32_t ts = millis();
     
@@ -186,11 +175,11 @@ void TaskLoraSend(void *pv) {
       (unsigned long)ts,
       isnan(temp) ? -999.0F : temp,
       isnan(hum) ? -999.0F : hum,
-      lat,     // From sensorData (thread-safe)
-      lng,     // From sensorData (thread-safe)
+      gps.latitude(),
+      gps.longitude(),
       is_tamper ? 1 : 0,
       light_level,
-      isnan(ax) ? -999.0F : sqrt(ax*ax + ay*ay + az*az)  // magnitude (fixed: was ax*ax + ax*ax + ax*ax)
+      isnan(ax) ? -999.0F : sqrt(ax*ax + ax*ax + ax*ax)  // magnitude
     );
     
     // write to LoRa module UART
@@ -224,12 +213,6 @@ void setup() {
   Serial.printf("\r\n");
   
   Serial.println("[INIT] Initializing modules...");
-
-  // Create global sensor data mutex (CRITICAL for thread safety!)
-  sensorDataMutex = xSemaphoreCreateMutex();
-  if (sensorDataMutex == NULL) {
-    Serial.println("[ERROR] Failed to create sensorDataMutex!");
-  }
 
   // Initialize vehicle configuration (loads from EEPROM or uses default)
   gVehicleConfig.begin();
@@ -282,24 +265,12 @@ void loop() {
   // ---- Cập nhật GPS ----
   gps.read();
 
-  // Save GPS data to shared struct if location updated
-  if (gps.updated()) {
-    if (xSemaphoreTake(sensorDataMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
-      sensorData.lat = gps.latitude();
-      sensorData.lng = gps.longitude();
-      sensorData.sats = gps.satellites();
-      sensorData.speed = gps.gpsObject().speed.kmph();
-      xSemaphoreGive(sensorDataMutex);
-      
-      // Debug: Print when GPS updates (less spam)
-      static uint32_t last_gps_update = 0;
-      uint32_t now = millis();
-      if (now - last_gps_update >= 5000) {  // Print every 5s
-        Serial.printf("[GPS] Fix: %.4f, %.4f (sats:%lu speed:%.1f km/h)\r\n",
-          sensorData.lat, sensorData.lng, sensorData.sats, sensorData.speed);
-        last_gps_update = now;
-      }
-    }
+  // ---- Debug print GPS occasionally (ví dụ mỗi 60s) ----
+  static uint32_t last_gps_print = 0;
+  uint32_t now = millis();
+  if (now - last_gps_print >= 60000) { // 60000 ms = 60s
+    gps.printLocation();
+    last_gps_print = now;
   }
 
   // yield to tasks
