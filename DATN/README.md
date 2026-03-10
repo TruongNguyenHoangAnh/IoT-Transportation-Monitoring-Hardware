@@ -61,19 +61,6 @@ platformio run --target upload --environment nodemcu-32s
 platformio device monitor --environment nodemcu-32s
 ```
 
-## Dashboard (frontend)
-
-Nếu dự án có dashboard HTML, bạn có thể phục vụ nó bằng một local server hoặc mở trực tiếp trong trình duyệt (khuyến nghị dùng server để tránh vấn đề CORS):
-
-- Dùng Live Server (VS Code) → mở `server/index.html` tại http://127.0.0.1:5500/server/index.html
-- Hoặc dùng Python simple server từ thư mục chứa `server`:
-
-```powershell
-cd <path-to-project>\DATN\server
-python -m http.server 8000
-# Mở http://localhost:8000/index.html
-```
-
 ## Lưu ý & Troubleshooting
 
 - Nếu upload gặp lỗi (ví dụ flash id = 0xffff): thử giảm `upload_speed`, kiểm tra chế độ boot (GPIO0), thử cáp USB khác.
@@ -81,7 +68,3 @@ python -m http.server 8000
 - Dùng `platformio run -v` để có đầu ra chi tiết khi gặp lỗi build.
 
 ---
-
-Nếu bạn muốn, tôi có thể:
-- Thêm file `run_local_server.ps1` để khởi động server tĩnh nhanh trên Windows.
-- Mở rộng README với flow diagram, sơ đồ nối dây, hoặc ví dụ JSON trả về từ `/data`.
