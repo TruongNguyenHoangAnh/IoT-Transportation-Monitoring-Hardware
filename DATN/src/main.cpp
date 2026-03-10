@@ -8,7 +8,7 @@
 #include "modules/adxl345.h"
 #include "modules/ldr.h"
 #include "modules/vehicle_config.h"
-#include "modules/local_memory.h"   // SD logging
+// #include "modules/local_memory.h"   // SD logging - DISABLED (not needed for real-time telemetry)
 #include "modules/sensor_Data.h"    // Shared sensor data struct + mutex
 // #include "modules/lora.h"      // <-- bỏ wrapper LoRa AT (không cần)
 
@@ -44,79 +44,48 @@ volatile uint32_t g_send_interval_ms = 2000; // mặc định 2s (send interval)
 volatile bool g_tamper_alert = false;         // Tamper alert flag
 static uint32_t _seq = 0;
 
-// ---- Helper: Detect node_id from LoRa TX OR generate from Chip ID ----
-// Try to listen for LoRa TX startup message "[LORA-NODE-ID] XYZ"
-// If timeout, fallback to generating unique node_id from ESP32 Chip ID
-// Lưu node_id vào EEPROM để tái sử dụng lần sau
+// ---- Helper: Auto-increment node_id from EEPROM counter ----
+// Each device gets unique Transport-X (1-100) on first boot
+// Counter stored in EEPROM byte 0 tracks next available node_id
+// Magic byte at EEPROM byte 1 detects if using new auto-increment system
 void detectOrGenerateNodeId(HardwareSerial &lora_uart) {
-  Serial.println("[DETECT] Listening for LoRa node_id (3 seconds)...");
+  (void)lora_uart;  // Unused parameter (TX no longer broadcasts node_id text)
   
-  uint32_t start_time = millis();
-  String buffer = "";
+  Serial.println("[SYNC] Auto-assigning node_id from EEPROM counter...");
   
-  while (millis() - start_time < 3000) {
-    if (lora_uart.available()) {
-      char c = lora_uart.read();
-      buffer += c;
-      
-      // Look for pattern: "[LORA-NODE-ID] 123"
-      if (buffer.indexOf("[LORA-NODE-ID]") >= 0) {
-        int pos = buffer.indexOf("[LORA-NODE-ID]");
-        int end = buffer.indexOf("\n", pos);
-        if (end > 0) {
-          String id_line = buffer.substring(pos, end);
-          // Extract number from "[LORA-NODE-ID] 123"
-          char* start_ptr = strchr(id_line.c_str(), ' ');
-          if (start_ptr != NULL) {
-            uint8_t node_id = (uint8_t)atoi(start_ptr + 1);
-            Serial.printf("[DETECT] Found node_id from LoRa TX = %d\r\n", node_id);
-            gVehicleConfig.setDeviceIdFromNodeId(node_id);
-            // Save to EEPROM for next boot
-            EEPROM.write(0, node_id);
-            EEPROM.commit();
-            Serial.printf("[DETECT] Saved node_id %d to EEPROM\r\n", node_id);
-            return;  // ✅ Success
-          }
-        }
-      }
-      
-      // Prevent buffer overflow
-      if (buffer.length() > 256) {
-        buffer = buffer.substring(128);
-      }
-    }
-    delayMicroseconds(100);
+  // Check magic byte to detect if using new auto-increment system
+  const uint8_t MAGIC_BYTE = 0xAA;
+  uint8_t magic = EEPROM.read(1);
+  
+  // If magic byte not set, this is old EEPROM data - reset counter
+  if (magic != MAGIC_BYTE) {
+    Serial.println("[SYNC] Old EEPROM detected - resetting counter to 0");
+    EEPROM.write(0, 0);
+    EEPROM.write(1, MAGIC_BYTE);
+    EEPROM.commit();
   }
   
-  // ===== FALLBACK 1: Check EEPROM for saved node_id =====
-  uint8_t saved_node_id = EEPROM.read(0);
-  if (saved_node_id != 0 && saved_node_id != 0xFF) {
-    Serial.printf("[DETECT] Found saved node_id in EEPROM = %d\r\n", saved_node_id);
-    gVehicleConfig.setDeviceIdFromNodeId(saved_node_id);
-    return;  // ✅ Use saved ID
+  // Read counter from EEPROM byte 0
+  uint8_t counter = EEPROM.read(0);
+  
+  // First boot: counter = 0, start from 1
+  if (counter == 0 || counter == 0xFF) {
+    counter = 1;
   }
   
-  // ===== FALLBACK 2: Generate from ESP32 Chip ID & save to EEPROM =====
-  Serial.println("[DETECT] LoRa node_id timeout, generating from Chip ID...");
+  uint8_t node_id = counter;
   
-  uint8_t node_id = 0;
+  // Increment counter for next device
+  counter++;
+  if (counter > 100) counter = 1;  // Wrap around after 100
   
-  // Read MAC address (6 bytes) from factory efuse
-  uint8_t chipId_bytes[6] = {0};
-  esp_read_mac(chipId_bytes, ESP_MAC_WIFI_STA);
-  
-  // Derive unique Node ID from MAC bytes by XORing all
-  for (int i = 0; i < 6; i++) {
-    node_id ^= chipId_bytes[i];
-  }
-  
-  if (node_id == 0) node_id = 1;  // Avoid 0
-  
-  Serial.printf("[DETECT] Generated node_id from Chip ID = %d\r\n", node_id);
-  // Save to EEPROM for next boot
-  EEPROM.write(0, node_id);
+  // Save incremented counter for next device
+  EEPROM.write(0, counter);
+  EEPROM.write(1, MAGIC_BYTE);  // Keep magic byte
   EEPROM.commit();
-  Serial.printf("[DETECT] Saved node_id %d to EEPROM\r\n", node_id);
+  
+  Serial.printf("[SYNC] Assigned node_id = %u (Transport-%u)\r\n", node_id, node_id);
+  Serial.printf("[SYNC] Next device will get node_id = %u\r\n", counter);
   
   gVehicleConfig.setDeviceIdFromNodeId(node_id);
 }
@@ -131,14 +100,10 @@ void TaskTamperMonitor(void *pvParameters) {
       g_tamper_alert = true;
       uint16_t light_level = ldr.getLightLevel();
       
-      Serial.printf("\r\n");
-      Serial.printf("╔══════════════════════════════════════════════════════╗\r\n");
-      Serial.printf("║         ⚠️  TAMPER ALERT - BOX OPENED!  ⚠️           ║\r\n");
-      Serial.printf("║  Vehicle:  %s                          ║\r\n", gVehicleConfig.getDeviceId());
-      Serial.printf("║  Time:     %lu ms                              ║\r\n", (unsigned long)millis());
-      Serial.printf("║  Light:    %u (THRESHOLD: 500)                    ║\r\n", light_level);
-      Serial.printf("╚══════════════════════════════════════════════════════╝\r\n");
-      Serial.printf("\r\n");
+      Serial.println("[TAMPER ALERT] BOX OPENED!");
+      Serial.printf("[TAMPER] Vehicle: %s\r\n", gVehicleConfig.getDeviceId());
+      Serial.printf("[TAMPER] Time: %lu ms\r\n", (unsigned long)millis());
+      Serial.printf("[TAMPER] Light Level: %u (THRESHOLD: 500)\r\n", light_level);
     }
     
     // Monitor every 100ms
@@ -146,18 +111,18 @@ void TaskTamperMonitor(void *pvParameters) {
   }
 }
 
-// ---- LED heartbeat task ----
-void TaskLED(void *pvParameters) {
-  pinMode(LED_PIN, OUTPUT);
-  bool on = false;
-  for (;;) {
-    // If tamper detected, blink faster (100ms)
-    uint16_t blink_period = g_tamper_alert ? 100 : 5000;
-    digitalWrite(LED_PIN, on ? HIGH : LOW);
-    on = !on;
-    vTaskDelay(pdMS_TO_TICKS(blink_period));
-  }
-}
+// ===== DISABLED: LED heartbeat task (not essential - visual indicator only) =====
+// void TaskLED(void *pvParameters) {
+//   pinMode(LED_PIN, OUTPUT);
+//   bool on = false;
+//   for (;;) {
+//     // If tamper detected, blink faster (100ms)
+//     uint16_t blink_period = g_tamper_alert ? 100 : 5000;
+//     digitalWrite(LED_PIN, on ? HIGH : LOW);
+//     on = !on;
+//     vTaskDelay(pdMS_TO_TICKS(blink_period));
+//   }
+// }
 
 // ---- Sender task: read sensors, build JSON, write to LORA_SER ----
 void TaskLoraSend(void *pv) {
@@ -194,31 +159,32 @@ void TaskLoraSend(void *pv) {
     // build JSON payload for LoRa
     uint32_t ts = millis();
     
-    // ===== TESTING: Always send full telemetry (ignore tamper for now) =====
+    // ===== Build clean JSON telemetry (one line) =====
     char payload[512];
     int n = snprintf(payload, sizeof(payload),
-      "{\"vehicle_id\":\"%s\",\"timestamp\":%lu,\"temp\":%.2f,\"humidity\":%.2f,\"battery\":4.0,\"gps\":{\"lat\":%.4f,\"lng\":%.4f},\"tamper\":%d,\"light_level\":%u,\"accel_mag\":%.2f}\n",
+      "{\"vehicle_id\":\"%s\",\"timestamp\":%lu,\"seq\":%lu,\"temp\":%.2f,\"humidity\":%.2f,\"gps\":{\"lat\":%.4f,\"lng\":%.4f},\"tamper\":%d,\"light_level\":%u,\"accel_mag\":%.2f}\n",
       gVehicleConfig.getDeviceId(),
       (unsigned long)ts,
+      (unsigned long)_seq,
       isnan(temp) ? -999.0F : temp,
       isnan(hum) ? -999.0F : hum,
-      lat,     // From sensorData (thread-safe)
-      lng,     // From sensorData (thread-safe)
+      lat,
+      lng,
       is_tamper ? 1 : 0,
       light_level,
-      isnan(ax) ? -999.0F : sqrt(ax*ax + ay*ay + az*az)  // magnitude (fixed: was ax*ax + ax*ax + ax*ax)
+      isnan(ax) ? -999.0F : sqrt(ax*ax + ay*ay + az*az)
     );
     
-    // write to LoRa module UART
+    // write to LoRa module UART (LORA_SER on UART1)
     if (n > 0) {
-      int written = LORA_SER.write((uint8_t*)payload, n);
+      int written = LORA_SER.write((uint8_t*)payload, n);  // Send JSON to LoRa TX module via UART1
       LORA_SER.flush();
       
-      Serial.printf("[ESP32->LORA] Written %d bytes to UART1: ", written);
-      Serial.write((uint8_t*)payload, n);
-      Serial.printf("\r\n");
+      // Debug output to Serial console (for monitoring, not LoRa)
+      Serial.println("[ESP32->LORA] JSON sent to LoRa TX module (UART1):");
+      Serial.println(payload);
     } else {
-      Serial.printf("[ERROR] snprintf failed! is_tamper=%d, n=%d\r\n", is_tamper, n);
+      Serial.printf("[ERROR] snprintf failed! n=%d\r\n", n);
     }
     
     _seq++;
@@ -235,12 +201,12 @@ void setup() {
   // Initialize EEPROM (needed for stable node_id storage)
   EEPROM.begin(512);
   
-  Serial.printf("\r\n");
-  Serial.printf("╔═══════════════════════════════════════════════════════╗\r\n");
-  Serial.printf("║   AMMO TRANSPORT MONITORING SYSTEM - NODE STARTUP    ║\r\n");
-  Serial.printf("║              (Phase 2: Multi-Vehicle)                ║\r\n");
-  Serial.printf("╚═══════════════════════════════════════════════════════╝\r\n");
-  Serial.printf("\r\n");
+// Serial.printf("\r\n");
+  // Serial.printf("╔═══════════════════════════════════════════════════════╗\r\n");
+  // Serial.printf("║   AMMO TRANSPORT MONITORING SYSTEM - NODE STARTUP    ║\r\n");
+  // Serial.printf("║              (Phase 2: Multi-Vehicle)                ║\r\n");
+  // Serial.printf("╚═══════════════════════════════════════════════════════╝\r\n");
+  // Serial.printf("\r\n");
   
   Serial.println("[INIT] Initializing modules...");
 
@@ -280,11 +246,11 @@ void setup() {
   Serial.println("[INIT] LDR tamper detection initialized (threshold=500)");
 
   // Tasks
-  xTaskCreate(TaskLED,              "LED",        1024, NULL, 1, NULL);
+  // xTaskCreate(TaskLED,              "LED",        1024, NULL, 1, NULL);  // DISABLED - not essential
   xTaskCreate(TaskTamperMonitor,    "TamperMon",  2048, NULL, 2, NULL);
   
   startDhtTask(2048, 1);        // DHT11 background task
-  startAdxlTelemetry(4096, 1);  // ADXL345 telemetry task
+  // startAdxlTelemetry(4096, 1);  // ADXL345 telemetry task - DISABLED (not used for JSON)
 
   // create Lora sender task
   xTaskCreate(TaskLoraSend, "LoraSend", 4096, NULL, 1, NULL);

@@ -104,7 +104,7 @@ static uint16_t crc16_calc(const uint8_t* data, uint16_t len)
 #define MAX_NODES 10
 
 typedef struct {
-    uint8_t  node_id;
+    uint32_t node_id;  /* 32-bit node ID for full 64-bit XOR support (billions of modules) */
     uint32_t last_seq;
 } SeqTracker_t;
 
@@ -118,7 +118,7 @@ static void seq_init(void)
 }
 
 /* NEW: Validate sequence with MAX_JUMP check (Priority 2) */
-static int seq_is_valid_with_jump_check(uint8_t node_id, uint32_t seq)
+static int seq_is_valid_with_jump_check(uint32_t node_id, uint32_t seq)
 {
     for (uint8_t i = 0; i < seq_tracker_count; i++) {
         if (seq_trackers[i].node_id == node_id) {
@@ -131,8 +131,8 @@ static int seq_is_valid_with_jump_check(uint8_t node_id, uint32_t seq)
             
             // ✅ NEW: Check jump not too large (Priority 2)
             if (seq - last_seq > MAX_JUMP_THRESHOLD) {
-                printf("[SECURITY] Jump too large for node=%d: %lu -> %lu (diff=%lu)\r\n",
-                       node_id, (unsigned long)last_seq, (unsigned long)seq,
+                printf("[SECURITY] Jump too large for node=%lu: %lu -> %lu (diff=%lu)\r\n",
+                       (unsigned long)node_id, (unsigned long)last_seq, (unsigned long)seq,
                        (unsigned long)(seq - last_seq));
                 return 0;  // Reject jump attack test
             }
@@ -143,7 +143,7 @@ static int seq_is_valid_with_jump_check(uint8_t node_id, uint32_t seq)
     return 1;  // First packet from this node
 }
 
-static void seq_update(uint8_t node_id, uint32_t seq)
+static void seq_update(uint32_t node_id, uint32_t seq)
 {
     for (uint8_t i = 0; i < seq_tracker_count; i++) {
         if (seq_trackers[i].node_id == node_id) {
@@ -167,11 +167,11 @@ static uint32_t tx_sequence = 0;
 // static int max_jump_test_mode = 0;
 /* ================================================================== */
 
-static uint8_t LOCAL_NODE_ID = 0;
+static uint8_t LOCAL_NODE_ID = 0;  /* 8-bit node ID (1-100) via modulo: (ChipId[0] ^ ChipId[1]) % 100 + 1 */
 
 /* Optimized packet structure (no timestamp) */
 typedef struct {
-    uint8_t  node_id;              /* 1 byte */
+    uint8_t  node_id;              /* 1 byte - 8-bit node ID (1-100) */
     uint32_t seq;                  /* 4 bytes */
     uint8_t  payload[CHUNK_MAX];
     uint16_t payload_len;
@@ -231,30 +231,7 @@ static void OnRxDone(uint8_t* payload, uint16_t size, int16_t rssi, int8_t snr)
 static void OnRxTimeout(void)    { Radio.Sleep(); State = RX_TIMEOUT; }
 static void OnRxError(void)      { Radio.Sleep(); State = RX_ERROR;   }
 
-// ===== Mock Sensor Data Generator (per node_id) =====
-// Generates unique but realistic sensor values for each vehicle
-typedef struct {
-    float temp_c;
-    float hum_pct;
-    float accel_mag_g;
-    float latitude;
-    float longitude;
-    uint16_t light_level;
-    uint8_t tamper;
-} MockSensorData_t;
-
-static void generate_mock_sensors(uint8_t node_id, MockSensorData_t* out) {
-    uint32_t seed = (uint32_t)node_id * 0x9E3779B9;
-    out->temp_c = 20.0f + (((seed >> 0) & 0xFF) % 150) / 10.0f;
-    out->hum_pct = 40.0f + (((seed >> 8) & 0xFF) % 510) / 10.0f;
-    out->accel_mag_g = 0.8f + (((seed >> 16) & 0xFF) % 70) / 100.0f;
-    out->latitude = 21.0285f + ((seed & 0xFF) - 128) / 10000.0f;
-    out->longitude = 105.8542f + (((seed >> 8) & 0xFF) - 128) / 10000.0f;
-    out->light_level = 150 + ((seed >> 16) & 0xFF);
-    out->tamper = 0;
-}
-
-// ===== UART JSON Parser =====
+// ===== UART JSON Parser ====="
 // Read one line from UART (JSON terminated by \n)
 // Returns: pointer to buffer if JSON complete, NULL if timeout/empty
 static char uart_json_buffer[300];
@@ -357,77 +334,57 @@ static void send_enhanced_secure_packet(const uint8_t* plaintext, uint16_t plain
     // Send
     radio_send_blocking(packet, (uint16_t)pkt_pos);
     
-    // ✅ NEW: Print node_id so ESP32 can capture and use as vehicle_id
-    printf("[LORA-NODE-ID] %d\r\n", LOCAL_NODE_ID);
-    printf("[TX SECURE] Vehicle=%d, seq=%lu, len=%u, crc=0x%04X\r\n",
-           LOCAL_NODE_ID, (unsigned long)sent_seq, plain_len, (unsigned)crc);
+    // ✅ COMMENTED: Don't broadcast node_id as text (was causing RX parse confusion)
+    // printf("[LORA-NODE-ID] %u\r\n", LOCAL_NODE_ID);
+    printf("[TX SECURE] Vehicle=%u, seq=%lu, len=%u, crc=0x%04X\r\n",
+           (unsigned)LOCAL_NODE_ID, (unsigned long)sent_seq, plain_len, (unsigned)crc);
 }
 
 /* ========== TEST FUNCTION (DISABLED IN PRODUCTION) ==========
- * Used only for replay attack testing - keeps seq unchanged
- * 
-static void send_enhanced_secure_packet_no_inc(const uint8_t* plaintext, uint16_t plain_len)
-{
-    if (plain_len > CHUNK_MAX) {
-        printf("ERROR: Payload too large (%u > %u bytes)\r\n", plain_len, CHUNK_MAX);
-        return;
-    }
+   Used only for replay attack testing - keeps seq unchanged - COMMENTED OUT
+   
+   static void send_enhanced_secure_packet_no_inc(const uint8_t* plaintext, uint16_t plain_len)
+   {
+       if (plain_len > CHUNK_MAX) {
+           printf("ERROR: Payload too large (%u > %u bytes)\\r\\n", plain_len, CHUNK_MAX);
+           return;
+       }
 
-    uint8_t packet[BUFFER_SIZE];
-    int pkt_pos = 0;
+       uint8_t packet[BUFFER_SIZE];
+       int pkt_pos = 0;
 
-    packet[pkt_pos++] = LOCAL_NODE_ID;
+       packet[pkt_pos++] = LOCAL_NODE_ID;
+       packet[pkt_pos++] = (tx_sequence >>  0) & 0xFF;
+       packet[pkt_pos++] = (tx_sequence >>  8) & 0xFF;
+       packet[pkt_pos++] = (tx_sequence >> 16) & 0xFF;
+       packet[pkt_pos++] = (tx_sequence >> 24) & 0xFF;
+       packet[pkt_pos++] = (plain_len >> 0) & 0xFF;
+       packet[pkt_pos++] = (plain_len >> 8) & 0xFF;
 
-    packet[pkt_pos++] = (tx_sequence >>  0) & 0xFF;
-    packet[pkt_pos++] = (tx_sequence >>  8) & 0xFF;
-    packet[pkt_pos++] = (tx_sequence >> 16) & 0xFF;
-    packet[pkt_pos++] = (tx_sequence >> 24) & 0xFF;
+       memcpy(&packet[pkt_pos], plaintext, plain_len);
+       pkt_pos += plain_len;
 
-    packet[pkt_pos++] = (plain_len >> 0) & 0xFF;
-    packet[pkt_pos++] = (plain_len >> 8) & 0xFF;
+       uint16_t crc = crc16_calc(plaintext, plain_len);
+       packet[pkt_pos++] = (crc >> 0) & 0xFF;
+       packet[pkt_pos++] = (crc >> 8) & 0xFF;
 
-    memcpy(&packet[pkt_pos], plaintext, plain_len);
-    pkt_pos += plain_len;
-
-    uint16_t crc = crc16_calc(plaintext, plain_len);
-    packet[pkt_pos++] = (crc >> 0) & 0xFF;
-    packet[pkt_pos++] = (crc >> 8) & 0xFF;
-
-    radio_send_blocking(packet, (uint16_t)pkt_pos);
-    printf("[TX REPLAY] node=%d, seq=%lu (SAME), len=%u, crc=0x%04X\r\n",
-           LOCAL_NODE_ID, (unsigned long)tx_sequence, plain_len, (unsigned)crc);
-}
+       radio_send_blocking(packet, (uint16_t)pkt_pos);
+       printf("[TX REPLAY] node=%u, seq=%lu (SAME), len=%u, crc=0x%04X\\r\\n",
+              (unsigned)LOCAL_NODE_ID, (unsigned long)tx_sequence, plain_len, (unsigned)crc);
+   }
  * ============================================================ */
 
 // ==================== MAIN ====================
 int app_start(void)
 {
-    printf("\r\n");
-    printf("==============================================\r\n");
-    printf("  MILITARY CONVOY VEHICLE NODE\r\n");
-    printf("  Secure LoRaWAN Communication System\r\n");
-    printf("  Firmware Version: 1.0-PRODUCTION\r\n");
-    printf("==============================================\r\n");
-    printf("\r\n");
-
     system_get_chip_id(ChipId);
     
-    // Derive unique Node ID from ChipId by XORing all bytes
-    // This prevents collisions between different boards
-    uint8_t node_id_temp = 0;
-    node_id_temp ^= (ChipId[0] >> 0) & 0xFF;
-    node_id_temp ^= (ChipId[0] >> 8) & 0xFF;
-    node_id_temp ^= (ChipId[0] >> 16) & 0xFF;
-    node_id_temp ^= (ChipId[0] >> 24) & 0xFF;
-    node_id_temp ^= (ChipId[1] >> 0) & 0xFF;
-    node_id_temp ^= (ChipId[1] >> 8) & 0xFF;
-    node_id_temp ^= (ChipId[1] >> 16) & 0xFF;
-    node_id_temp ^= (ChipId[1] >> 24) & 0xFF;
-    LOCAL_NODE_ID = node_id_temp;
-    if (LOCAL_NODE_ID == 0) LOCAL_NODE_ID = 1;
+    // ✅ SIMPLE: Assign node ID in range 1-100 using modulo of XOR
+    // Each unique chip ID gets consistent ID within 1-100 range
+    LOCAL_NODE_ID = ((ChipId[0] ^ ChipId[1]) % 100) + 1;
 
     printf("Vehicle Chip ID: 0x%08lX-%08lX\r\n", (unsigned long)ChipId[0], (unsigned long)ChipId[1]);
-    printf("Vehicle Node ID: %d (unique identifier)\r\n", LOCAL_NODE_ID);
+    printf("Vehicle Node ID: %u\r\n", (unsigned)LOCAL_NODE_ID);
     printf("Status: OPERATIONAL\r\n");
     printf("\r\n");
 
@@ -467,34 +424,7 @@ int app_start(void)
     printf("[INIT] Listening for sensor JSON from ESP32...\r\n");
     seq_init();
 
-    printf("[+] Security Protocol Active:\r\n");
-    printf("   - Anti-replay protection (sequence validation)\r\n");
-    printf("   - CRC16-CCITT integrity verification\r\n");
-    printf("   - Secure packet transmission\r\n");
-    printf("   - MAX_JUMP_THRESHOLD=%d (desync protection)\r\n", MAX_JUMP_THRESHOLD);
-    printf("\r\n");
-
     Radio.Rx(RX_TIMEOUT_VALUE);
-
-    printf("[!] Waiting for JSON telemetry from ESP32 via UART...\r\n");
-    printf("[+] Format: {\"vehicle_id\":\"NODE-XX\",\"timestamp\":..., ...}\r\n");
-
-    // Initial status packet
-    printf("[>] Transmitting vehicle status to Command Center...\r\n");
-    {
-        const uint8_t status_payload[] = "VEHICLE_READY";
-        send_enhanced_secure_packet(status_payload, sizeof(status_payload) - 1);
-    }
-
-    printf("\r\n");
-    printf("[-] PATROL MODE ACTIVE\r\n");
-    printf("   Transmitting secure heartbeat every 10 seconds\r\n");
-    printf("   All security protocols enabled\r\n");
-    printf("\r\n");
-
-    static uint32_t heartbeat_count = 0;
-    static uint32_t last_json_time = 0;
-    
     /* ========== TEST MODE VARIABLES (DISABLED IN PRODUCTION) ========== */
     // static uint32_t test_phase = 0;  /* 0=NORMAL, 1=REPLAY, 2=JUMP, 3=MAX_JUMP */
 
@@ -510,44 +440,19 @@ int app_start(void)
             
             if (strlen(json_line) <= CHUNK_MAX) {
                 send_enhanced_secure_packet((uint8_t*)json_line, strlen(json_line));
-                last_json_time = TimerGetCurrentTime();
                 printf("[TX OK] Real sensor data transmitted\r\n");
             } else {
                 printf("[TX ERROR] JSON too long (%u > %u)\r\n", (unsigned)strlen(json_line), CHUNK_MAX);
             }
         } else {
-            // No JSON available - check if time for heartbeat fallback
-            static uint32_t last_heartbeat = 0;
+            // No JSON available - waiting for real sensor data from ESP32
+            static uint32_t last_status_msg = 0;
             uint32_t now = TimerGetCurrentTime();
             
-            if (TimerGetElapsedTime(last_heartbeat) > 10000) {
-                heartbeat_count++;
-                
-                // If no real data for >15 seconds, send heartbeat to keep alive
-                uint32_t time_since_json = TimerGetElapsedTime(last_json_time);
-                
-                if (time_since_json > 15000) {
-                    printf("\n[HEARTBEAT] #%lu (no UART data for %lums)\r\n", 
-                           (unsigned long)heartbeat_count, (unsigned long)time_since_json);
-                    
-                    // Generate mock sensor data as fallback
-                    MockSensorData_t sensors;
-                    generate_mock_sensors(LOCAL_NODE_ID, &sensors);
-                    
-                    // Build JSON payload with mock data
-                    char json_payload[300];
-                    int len = snprintf(json_payload, sizeof(json_payload),
-                                     "{\"vehicle_id\":\"NODE-%d\",\"temp\":%.1f,\"hum\":%.1f,\"accel_mag\":%.2f,\"gps\":{\"lat\":%.4f,\"lng\":%.4f},\"light_level\":%u,\"tamper\":%d,\"status\":\"HEARTBEAT\"}",
-                                     LOCAL_NODE_ID, sensors.temp_c, sensors.hum_pct, sensors.accel_mag_g,
-                                     sensors.latitude, sensors.longitude, sensors.light_level, sensors.tamper);
-                    
-                    if (len > 0 && len < (int)sizeof(json_payload)) {
-                        send_enhanced_secure_packet((uint8_t*)json_payload, (uint16_t)len);
-                        printf("[TX FALLBACK] Heartbeat transmitted (mock data)\r\n");
-                    }
-                }
-                
-                last_heartbeat = now;
+            // Print status message every 5 seconds
+            if (TimerGetElapsedTime(last_status_msg) > 5000) {
+                printf("[STATUS] Waiting for real sensor data from ESP32 via UART\r\n");
+                last_status_msg = now;
             }
         }
         

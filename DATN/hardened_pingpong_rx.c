@@ -99,7 +99,7 @@ static uint16_t crc16_calc(const uint8_t* data, uint16_t len)
 #define MAX_NODES 10
 
 typedef struct {
-    uint8_t  node_id;
+    uint8_t  node_id;   /* 8-bit node ID (1-100) from TX */
     uint32_t last_seq;
     uint32_t packets_received;
     uint32_t packets_rejected;
@@ -291,13 +291,6 @@ int app_start( void )
     uint8_t i;
     uint32_t random;
 
-    printf("\r\n");
-    printf("==============================================\r\n");
-    printf("  HARDENED PingPong-RX GATEWAY v1.1\r\n");
-    printf("  Multi-Node Security with Timestamps\r\n");
-    printf("==============================================\r\n");
-    printf("\r\n");
-
     (void)system_get_chip_id(ChipId);
     printf("Gateway Chip ID: 0x%08lX-%08lX\r\n",
            (unsigned long)ChipId[0], (unsigned long)ChipId[1]);
@@ -306,13 +299,13 @@ int app_start( void )
     // Initialize per-node tracking
     per_node_init();
     
-    printf("[+] Security Features:\r\n");
-    printf("   - Per-node sequence tracking\r\n");
-    printf("   - CRC16-CCITT integrity check\r\n");
-    printf("   - Timestamp logging (NOT validated - no clock sync)\r\n");
-    printf("   - MAX_JUMP detection (threshold=%u)\r\n", MAX_JUMP_THRESHOLD);
-    printf("   - Clock skew tolerance (+-%u sec) [DISABLED]\r\n", CLOCK_SKEW_TOLERANCE_SEC);
-    printf("\r\n");
+    // printf("[+] Security Features:\r\n");
+    // printf("   - Per-node sequence tracking\r\n");
+    // printf("   - CRC16-CCITT integrity check\r\n");
+    // printf("   - Timestamp logging (NOT validated - no clock sync)\r\n");
+    // printf("   - MAX_JUMP detection (threshold=%u)\r\n", MAX_JUMP_THRESHOLD);
+    // printf("   - Clock skew tolerance (+-%u sec) [DISABLED]\r\n", CLOCK_SKEW_TOLERANCE_SEC);
+    // printf("\r\n");
 
     /* Radio init */
     RadioEvents.TxDone = OnTxDone;
@@ -373,11 +366,11 @@ int app_start( void )
                            (int)RssiValue, (int)SnrValue);
 
                     if (pkt.payload_len > 0) {
-                        printf("        Payload: ");
-                        for (uint16_t i = 0; i < pkt.payload_len; i++) {
-                            printf("%c", (char)pkt.payload[i]);
-                        }
-                        printf("\r\n");
+                        // Build complete payload string, print on single line
+                        char payload_str[CHUNK_MAX + 1];
+                        memcpy(payload_str, (char*)pkt.payload, pkt.payload_len);
+                        payload_str[pkt.payload_len] = '\0';
+                        printf("Payload: %s\r\n", payload_str);
                     }
                 } else {
                     total_rejected++;

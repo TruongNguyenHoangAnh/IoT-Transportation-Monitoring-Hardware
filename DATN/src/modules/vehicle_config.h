@@ -28,7 +28,7 @@ public:
     // Set device ID in EEPROM
     void setDeviceId(const char* id);
     
-    // Set device ID from node_id (numeric) - converts to format like "NODE-123"
+    // Set device ID from node_id (numeric) - converts to format like "Transport-123"
     void setDeviceIdFromNodeId(uint8_t node_id);
     
     // Get vehicle number (1-99)

@@ -1,205 +1,76 @@
 #include "dht11.h"
 #include "vehicle_config.h"
 
-#include <WiFi.h>
-#include <PubSubClient.h>
+// ===== DISABLED: WiFi + MQTT (not needed for real-time sensor data) =====
+// #include <WiFi.h>
+// #include <PubSubClient.h>
 
-// Declare external vehicle config (initialized in main.cpp)
-extern VehicleConfig gVehicleConfig;
-
-// ===== (Tùy chọn) Kết nối WiFi + MQTT (demo) =====
-#ifndef WIFI_SSID
-#define WIFI_SSID    "H3-908-5G"
-#define WIFI_PASS    "66668888"
-#define MQTT_BROKER  "192.168.1.100"
-#define MQTT_PORT    1883
-#define MQTT_TOPIC   "fleet/VX-21/MAIN_BAY/telemetry"
-#endif
+// const char* WIFI_SSID = "H3-908-5G";
+// const char* WIFI_PASS = "66668888";
+// const char* MQTT_BROKER = "192.168.1.100";
+// =========================================================================
 
 // ===== Định danh thiết bị (đưa vào JSON) =====
 // VEHICLE_ID is now dynamic from gVehicleConfig.getDeviceId()
-static const char* DEVICE_ID  = "ESP32-AMMO-001";
-static const char* COMPARTMENT= "MAIN_BAY";
+// static const char* DEVICE_ID  = "ESP32-AMMO-001";
+// static const char* COMPARTMENT= "MAIN_BAY";
 
-// ===== Ngưỡng & chính sách =====
-static const float AMMO_TEMP_HIGH_C  = 30.0f; // vào cảnh báo nhiệt
-static const float AMMO_TEMP_CLEAR_C = 29.0f; // thoát cảnh báo nhiệt (hysteresis)
-static const float AMMO_HUM_HIGH_P   = 80.0f; // vào cảnh báo ẩm
-static const float AMMO_HUM_CLEAR_P  = 75.0f; // thoát cảnh báo ẩm (hysteresis)
-
-// Bỏ qua N mẫu đầu (tránh số "rác" khi cảm biến vừa khởi động)
-static const int WARMUP_SAMPLES = 2;
-
-// Throttle: in/publish cảnh báo tối đa 1 lần mỗi khoảng này (ms)
-static const unsigned long ALERT_MIN_INTERVAL_MS = 500UL;
-
-// Throttle telemetry print: only print human/JSON telemetry every N readings
-// (read interval currently 5s in TaskDHT11 -> N=12 => ~60s between prints)
-static const uint8_t TELEMETRY_PRINT_EVERY_N = 1; // Print every reading for debugging
-static int telemetryPrintCounter = 0;
-
-// ===== Trạng thái cảnh báo =====
-static bool thermalAlertActive  = false;
-static bool humidityAlertActive = false;
-static unsigned long lastAlertMs = 0;
-
-// Đếm mẫu để warmup
-static int sampleCount = 0;
-
-// ===== WiFi/MQTT (demo) =====
-static WiFiClient espClient;
-static PubSubClient mqttClient(espClient);
+// ===== DISABLED: Threshold alerts + WiFi/MQTT (not needed) =====
+// static const float AMMO_TEMP_HIGH_C  = 30.0f;
+// static const float AMMO_TEMP_CLEAR_C = 29.0f;
+// static const float AMMO_HUM_HIGH_P   = 80.0f;
+// static const float AMMO_HUM_CLEAR_P  = 75.0f;
+// static const int WARMUP_SAMPLES = 2;
+// static const unsigned long ALERT_MIN_INTERVAL_MS = 500UL;
+// static const uint8_t TELEMETRY_PRINT_EVERY_N = 1;
+// static int telemetryPrintCounter = 0;
+// static bool thermalAlertActive  = false;
+// static bool humidityAlertActive = false;
+// static unsigned long lastAlertMs = 0;
+// static int sampleCount = 0;
+// static WiFiClient espClient;
+// static PubSubClient mqttClient(espClient);
+// =========================================================================
 
 // The project defines a global `DHTModule dht` in main.cpp. Use that instance here.
 extern DHTModule dht;
 
-void wifiConnectIfNeeded() {
-  if (WiFi.status() == WL_CONNECTED) return;
-  if (strlen(WIFI_SSID) == 0) return; // không cấu hình -> bỏ qua
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
-  unsigned long t0 = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - t0 < 8000) {
-    delay(200);
-  }
-}
-
-void mqttConnectIfNeeded() {
-  if (mqttClient.connected()) return;
-  if (WiFi.status() != WL_CONNECTED) return;
-  mqttClient.setServer(MQTT_BROKER, MQTT_PORT);
-  mqttClient.connect(DEVICE_ID);
-}
-
-// ===== In/Pub tiện ích =====
-void publishIfConnected(const String& payload) {
-  if (mqttClient.connected()) {
-    mqttClient.publish(MQTT_TOPIC, payload.c_str());
-  }
-}
-
-void printTelemetryHuman(float t, float h, const char* status) {
-  // COMMENTED OUT - verbose debug output
-  // Serial.print("[AMMO-TELEMETRY] temp_c=");
-  // Serial.print(t, 1);
-  // Serial.print(", hum_pct=");
-  // Serial.print(h, 1);
-  // Serial.print(", compartment=");
-  // Serial.print(COMPARTMENT);
-  // Serial.print(", status=");
-  // Serial.println(status);
-}
-
-void printTelemetryJSON(float t, float h, const char* status) {
-  // timestamp dùng millis() để đơn giản; có thể thay bằng epoch (NTP) khi cần
-  unsigned long ts = millis();
-  String json = "{";
-  json += "\"type\":\"telemetry\"";
-  json += ",\"domain\":\"ammo_transport\"";
-  json += ",\"vehicle_id\":\"" + String(gVehicleConfig.getDeviceId()) + "\"";
-  json += ",\"device_id\":\""  + String(DEVICE_ID)  + "\"";
-  json += ",\"compartment\":\""+ String(COMPARTMENT)+"\"";
-  json += ",\"timestamp_ms\":" + String(ts);
-  json += ",\"temp_c\":"       + String(t, 2);
-  json += ",\"hum_pct\":"      + String(h, 2);
-  json += ",\"status\":\""     + String(status) + "\"";
-  json += "}";
-  Serial.println(json);
-  publishIfConnected(json);
-}
-
-void maybePrintAlerts(float t, float h, bool edgeThermal, bool edgeHumidity) {
-  const unsigned long now = millis();
-  const bool timeOk = (now - lastAlertMs) >= ALERT_MIN_INTERVAL_MS;
-
-  // In cảnh báo nếu: vừa chuyển trạng thái vào ALERT (edge), hoặc đến kỳ throttle
-  if ((thermalAlertActive && (edgeThermal || timeOk))) {
-    Serial.print("[AMMO-ALERT] Thermal risk: temp_c=");
-    Serial.print(t, 1);
-    Serial.println(" exceeds safe threshold for ammunition transport.");
-    lastAlertMs = now;
-  }
-  if ((humidityAlertActive && (edgeHumidity || timeOk))) {
-    Serial.print("[AMMO-ALERT] Humidity risk: hum_pct=");
-    Serial.print(h, 1);
-    Serial.println(" exceeds safe threshold for ammunition storage.");
-    lastAlertMs = now;
-  }
-}
+// ===== DISABLED: WiFi/MQTT functions =====
+// void wifiConnectIfNeeded() { ... }
+// void mqttConnectIfNeeded() { ... }
+// void publishIfConnected() { ... }
+// void printTelemetryHuman() { ... }
+// void printTelemetryJSON() { ... }
+// void maybePrintAlerts() { ... }
+// =========================================================================
 
 // ===== Task đọc DHT11 =====
 void TaskDHT11(void *pvParameters) {
-  static uint32_t mockSeed = 0;
-  
   for (;;) {
-    // ===== REAL DHT11 CODE (commented - waiting for DHT11 sensor) =====
-    // TODO: Uncomment these lines when DHT11 is installed
-    // float h = dht.readHumidity();
-    // float t = dht.readTemperature(); // °C
+    // ===== REAL DHT11 CODE - Read from actual DHT11 sensor =====
+    float h = dht.readHumidity();
+    float t = dht.readTemperature(); // °C
     
-    // ===== TEMPORARY MOCK MODE (DHT20 không đủ chân data) =====
-    // Generating realistic temperature & humidity for full system testing
-    mockSeed++;
-    float t = 22.0f + (((mockSeed * 73) & 0xFF) - 128) / 256.0f * 4.0f;  // 20-24°C
-    float h = 50.0f + (((mockSeed * 137) & 0xFF) - 128) / 256.0f * 10.0f; // 45-55%
-
-    // Đảm bảo MQTT "nhịp tim" nếu có cấu hình
-    if (WiFi.status() == WL_CONNECTED) mqttClient.loop();
-
-    // Check data validity (mock data always valid)
+    // Check data validity
     if (isnan(h) || isnan(t)) {
-      // Note: This won't happen with mock data
-      // Serial.println("[AMMO-ERROR] DHT offline or read failure");
-      t = 23.0f;
-      h = 50.0f;
+      Serial.println("[DHT11-ERROR] Sensor read failed (no valid data)");
+      t = -999.0f;
+      h = -999.0f;
     }
 
-    // Serial.println("[DEBUG] DHT11 reading successful.");
-    // Serial.print("Temperature: "); Serial.println(t);
-    // Serial.print("Humidity: "); Serial.println(h);
+    // ===== DISABLED: Save to sensorData (not used - TaskLoraSend reads directly from dht) =====
+    // if (xSemaphoreTake(sensorDataMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+    //   sensorData.temp = t;
+    //   sensorData.humidity = h;
+    //   xSemaphoreGive(sensorDataMutex);
+    // }
 
-    // Bỏ qua N mẫu đầu (warmup)
-    if (sampleCount < WARMUP_SAMPLES) {
-      sampleCount++;
-      // In JSON để quan sát (tùy chọn), hoặc chỉ log nhẹ:
-      // Serial.println("[AMMO-SYSTEM] Warming up sensor, skipping this reading.");
-      vTaskDelay(pdMS_TO_TICKS(5000));
-      continue;
+    // Debug output (every 5s)
+    if (t != -999.0f && h != -999.0f) {
+      // Serial.printf("[DHT11] Temp=%.2f°C, Humidity=%.2f%%\r\n", t, h);
     }
 
-    // ==== Hysteresis cho THERMAL ====
-    bool prevThermal = thermalAlertActive;
-    if (!thermalAlertActive && t > AMMO_TEMP_HIGH_C) {
-      thermalAlertActive = true;
-    } else if (thermalAlertActive && t < AMMO_TEMP_CLEAR_C) {
-      thermalAlertActive = false;
-    }
-
-    // ==== Hysteresis cho HUMIDITY ====
-    bool prevHumidity = humidityAlertActive;
-    if (!humidityAlertActive && h > AMMO_HUM_HIGH_P) {
-      humidityAlertActive = true;
-    } else if (humidityAlertActive && h < AMMO_HUM_CLEAR_P) {
-      humidityAlertActive = false;
-    }
-
-    // ==== Tính status tổng hợp cho TELEMETRY/JSON ====
-    const char* status = (thermalAlertActive || humidityAlertActive) ? "ALERT" : "OK";
-
-    // 1) Log người đọc + JSON cho máy đọc (throttled to reduce terminal spam)
-    telemetryPrintCounter++;
-    if (TELEMETRY_PRINT_EVERY_N == 0 || (telemetryPrintCounter % TELEMETRY_PRINT_EVERY_N) == 0) {
-      printTelemetryHuman(t, h, status);
-      printTelemetryJSON(t, h, status);
-      // avoid counter overflow
-      if (telemetryPrintCounter > 1000000) telemetryPrintCounter = 0;
-    }
-
-    // 3) In cảnh báo (throttle + edge trigger)
-    bool edgeThermal  = (!prevThermal  && thermalAlertActive);
-    bool edgeHumidity = (!prevHumidity && humidityAlertActive);
-    maybePrintAlerts(t, h, edgeThermal, edgeHumidity);
-
-    vTaskDelay(pdMS_TO_TICKS(5000)); // 5s
+    vTaskDelay(pdMS_TO_TICKS(5000)); // Read every 5s
   }
 }
 

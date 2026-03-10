@@ -53,9 +53,9 @@ void VehicleConfig::setDeviceId(const char* id) {
 }
 
 void VehicleConfig::setDeviceIdFromNodeId(uint8_t node_id) {
-    // Convert numeric node_id to string format: "NODE-123"
+    // Convert numeric node_id to string format: "Transport-123"
     char buf[32];
-    snprintf(buf, sizeof(buf), "NODE-%d", (int)node_id);
+    snprintf(buf, sizeof(buf), "Transport-%d", (int)node_id);
     setDeviceId(buf);
     Serial.printf("[VEHICLE] Auto-detected from LoRa: %s\r\n", device_id);
 }

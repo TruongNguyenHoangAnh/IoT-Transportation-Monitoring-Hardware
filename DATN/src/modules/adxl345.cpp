@@ -22,17 +22,12 @@ static int16_t x = 0, y = 0, z = 0;
 
 // Full-resolution: 4 mg/LSB ≈ 0.0039 g/LSB
 static const float G_PER_LSB = 0.0039f;
-// Ngưỡng sốc đơn giản theo magnitude |a| (g)
-static const float SHOCK_G_THRESHOLD = 2.5f;
-
-// Nhịp in telem
-static const unsigned long TELEMETRY_INTERVAL_MS = 1000;
-static unsigned long last_ts = 0;
-
-// ===== Thông tin theo chủ đề ammo (chỉ dùng cho OUTPUT) =====
-// VEHICLE_ID is now dynamic from gVehicleConfig.getDeviceId()
-static const char* DEVICE_ID    = "ESP32-AMMO-IMU-001";
-static const char* COMPARTMENT  = "MAIN_BAY";
+// ===== DISABLED: Telemetry output and ammo-themed constants (not needed - magnitude used directly in JSON) =====
+// static const float SHOCK_G_THRESHOLD = 2.5f;
+// static const unsigned long TELEMETRY_INTERVAL_MS = 1000;
+// static unsigned long last_ts = 0;
+// static const char* DEVICE_ID    = "ESP32-AMMO-IMU-001";
+// static const char* COMPARTMENT  = "MAIN_BAY";
 
 // ---------- I2C helpers ----------
 static void writeRegister(uint8_t device, uint8_t reg, uint8_t val) {
@@ -110,84 +105,53 @@ void ADXLModule::getRawLSB(int16_t &x_lsb, int16_t &y_lsb, int16_t &z_lsb) {
   z_lsb = z;
 }
 
-// === Telemetry task (using direct I2C) ===
-void TaskADXL_Telem(void *pvParameters) {
-  Wire.begin();
-  writeRegister(DEVICE_ADDRESS, REG_DATA_FORMAT, 0x0B); // FULL_RES=1, Range=±16g
-  writeRegister(DEVICE_ADDRESS, REG_POWER_CTRL,  0x08); // Measure=1
-  delay(100); // Wait for sensor to be ready (CRITICAL!)
-  writeRegister(DEVICE_ADDRESS, REG_INT_ENABLE,  0x80); // Data Ready int (optional)
-
-  // Banner theo chủ đề
-  // Serial.println("[AMMO-SYSTEM] ESP32 online – IoT monitoring for ammunition transport (ADXL345).");
-  // Serial.print  ("[AMMO-SYSTEM] Route profile: VEHICLE=");
-  // Serial.print(VEHICLE_ID);
-  // Serial.print(", COMPARTMENT=");
-  // Serial.print(COMPARTMENT);
-  // Serial.print(", REPORT_INTERVAL=");
-  // Serial.print(TELEMETRY_INTERVAL_MS);
-  // Serial.println("ms");
-
-  for (;;) {
-    unsigned long now = millis();
-    if (now - last_ts >= TELEMETRY_INTERVAL_MS) {
-      last_ts = now;
-
-      // Đọc cảm biến
-      readXYZ();
-
-      // Tính magnitude |a| để phát hiện shock (đơn giản)
-      float xg = x * G_PER_LSB;
-      float yg = y * G_PER_LSB;
-      float zg = z * G_PER_LSB;
-      float mag_g = sqrtf(xg*xg + yg*yg + zg*zg);
-      bool shock = (mag_g >= SHOCK_G_THRESHOLD);
-
-      // ---- OUTPUT giống phong cách DHT11 đã chuẩn hoá ----
-      const char* status = shock ? "ALERT" : "OK";
-
-      // 1) Dòng log người đọc (COMMENTED OUT - verbose)
-      // Serial.print("[AMMO-TELEMETRY] ax_lsb=");
-      // Serial.print(x);
-      // Serial.print(", ay_lsb=");
-      // Serial.print(y);
-      // Serial.print(", az_lsb=");
-      // Serial.print(z);
-      // Serial.print(", |a|_g=");
-      // Serial.print(mag_g, 2);
-      // Serial.print(", compartment=");
-      // Serial.print(COMPARTMENT);
-      // Serial.print(", status=");
-      // Serial.println(status);
-
-      // 2) Dòng JSON một dòng (sẵn sàng đưa lên server/MQTT)
-      Serial.print("{\"type\":\"telemetry\",\"domain\":\"ammo_transport\"");
-      Serial.print(",\"vehicle_id\":\"" );   Serial.print(gVehicleConfig.getDeviceId());   Serial.print("\"");
-      Serial.print(",\"device_id\":\"");    Serial.print(DEVICE_ID);    Serial.print("\"");
-      Serial.print(",\"compartment\":\"");  Serial.print(COMPARTMENT);  Serial.print("\"");
-      Serial.print(",\"timestamp_ms\":");   Serial.print(now);
-      Serial.print(",\"accel\":{\"x_lsb\":"); Serial.print(x);
-      Serial.print(",\"y_lsb\":");            Serial.print(y);
-      Serial.print(",\"z_lsb\":");            Serial.print(z);
-      Serial.print(",\"mag_g\":");            Serial.print(mag_g, 3);
-      Serial.print("}");
-      Serial.print(",\"status\":\"");       Serial.print(status);       Serial.print("\"");
-      Serial.println("}");
-
-      // 3) Cảnh báo (nếu có)
-      if (shock) {
-        Serial.print("[AMMO-ALERT] Shock risk: |a|=");
-        Serial.print(mag_g, 2);
-        Serial.print(" g exceeds threshold ");
-        Serial.print(SHOCK_G_THRESHOLD, 2);
-        Serial.println(" g for ammunition transport.");
-      }
-    }
-    vTaskDelay(pdMS_TO_TICKS(10));
-  }
-}
-
-// Helper to start telemetry task
-void startAdxlTelemetry(unsigned long stackSize, UBaseType_t priority) {
-  xTaskCreate(TaskADXL_Telem, "ADXL_Telem", stackSize, NULL, priority, NULL);
-}
+// ===== DISABLED: Telemetry task (not needed - TaskLoraSend reads ADXL directly for JSON) =====
+// void TaskADXL_Telem(void *pvParameters) {
+//   Wire.begin();
+//   writeRegister(DEVICE_ADDRESS, REG_DATA_FORMAT, 0x0B); // FULL_RES=1, Range=±16g
+//   writeRegister(DEVICE_ADDRESS, REG_POWER_CTRL,  0x08); // Measure=1
+//   delay(100); // Wait for sensor to be ready (CRITICAL!)
+//   writeRegister(DEVICE_ADDRESS, REG_INT_ENABLE,  0x80); // Data Ready int (optional)
+//
+//   for (;;) {
+//     unsigned long now = millis();
+//     if (now - last_ts >= TELEMETRY_INTERVAL_MS) {
+//       last_ts = now;
+//       readXYZ();
+//       float xg = x * G_PER_LSB;
+//       float yg = y * G_PER_LSB;
+//       float zg = z * G_PER_LSB;
+//       float mag_g = sqrtf(xg*xg + yg*yg + zg*zg);
+//       bool shock = (mag_g >= SHOCK_G_THRESHOLD);
+//       const char* status = shock ? "ALERT" : "OK";
+//       
+//       // JSON output
+//       Serial.print("{\"type\":\"telemetry\",\"domain\":\"ammo_transport\"");
+//       Serial.print(",\"vehicle_id\":\"" );   Serial.print(gVehicleConfig.getDeviceId());   Serial.print("\"");
+//       Serial.print(",\"device_id\":\"");    Serial.print(DEVICE_ID);    Serial.print("\"");
+//       Serial.print(",\"compartment\":\"");  Serial.print(COMPARTMENT);  Serial.print("\"");
+//       Serial.print(",\"timestamp_ms\":");   Serial.print(now);
+//       Serial.print(",\"accel\":{\"x_lsb\":"); Serial.print(x);
+//       Serial.print(",\"y_lsb\":");            Serial.print(y);
+//       Serial.print(",\"z_lsb\":");            Serial.print(z);
+//       Serial.print(",\"mag_g\":");            Serial.print(mag_g, 3);
+//       Serial.print("}");
+//       Serial.print(",\"status\":\"");       Serial.print(status);       Serial.print("\"");
+//       Serial.println("}");
+//
+//       if (shock) {
+//         Serial.print("[AMMO-ALERT] Shock risk: |a|=");
+//         Serial.print(mag_g, 2);
+//         Serial.print(" g exceeds threshold ");
+//         Serial.print(SHOCK_G_THRESHOLD, 2);
+//         Serial.println(" g for ammunition transport.");
+//       }
+//     }
+//     vTaskDelay(pdMS_TO_TICKS(10));
+//   }
+// }
+//
+// // Helper to start telemetry task
+// void startAdxlTelemetry(unsigned long stackSize, UBaseType_t priority) {
+//   xTaskCreate(TaskADXL_Telem, "ADXL_Telem", stackSize, NULL, priority, NULL);
+// }
