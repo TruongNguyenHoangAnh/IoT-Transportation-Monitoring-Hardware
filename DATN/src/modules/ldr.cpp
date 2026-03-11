@@ -9,10 +9,23 @@ void LDRModule::begin() {
     // Configure ADC pin - no need for pinMode in ESP32, ADC auto-configures
     analogSetWidth(12);  // 12-bit ADC (0-4095)
     // Note: ADC attenuation auto-configured by Arduino core for GPIO 35
+    
+    // Initialize filter buffer with current readings to avoid stale data
+    for (int i = 0; i < FILTER_SIZE; i++) {
+        filter_buffer[i] = analogRead(adc_pin);
+        delay(10);  // Small delay between reads
+    }
+    filter_idx = 0;
 }
 
 uint16_t LDRModule::readRaw() {
-    return analogRead(adc_pin);
+    uint16_t raw = analogRead(adc_pin);
+    // ⚠️ INVERT: Sensor wired inversely (light increases -> ADC decreases)
+    // Solution: Subtract from max ADC value (4095)
+    uint16_t inverted = 4095 - raw;
+    // Normalize from 12-bit ADC (0-4095) to 10-bit (0-1023) for compatibility
+    uint16_t normalized = (inverted * 1023) / 4095;
+    return normalized;
 }
 
 uint16_t LDRModule::readSmoothed() {

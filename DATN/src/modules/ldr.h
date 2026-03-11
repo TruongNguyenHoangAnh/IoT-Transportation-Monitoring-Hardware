@@ -45,7 +45,9 @@ private:
     bool tamper_detected;
     
     // Tamper threshold: if light > this value -> box opened
-    uint16_t TAMPER_THRESHOLD = 500;  // Adjust based on calibration
+    // Raw value range: ~70 (dark) to ~370 (bright) - normalized to 0-1023
+    // Threshold 150 = sensitive detection when box opens
+    uint16_t TAMPER_THRESHOLD = 150;
     
     // Moving average for noise filtering
     static const uint8_t FILTER_SIZE = 8;

@@ -242,8 +242,8 @@ void setup() {
   
   // LDR (Light Dependent Resistor) for tamper detection
   ldr.begin();
-  ldr.setTamperThreshold(500);  // Adjust based on your environment
-  Serial.println("[INIT] LDR tamper detection initialized (threshold=500)");
+  ldr.setTamperThreshold(850);  // Adjusted for older sensor variants (was 500)
+  Serial.println("[INIT] LDR tamper detection initialized (threshold=850)");
 
   // Tasks
   // xTaskCreate(TaskLED,              "LED",        1024, NULL, 1, NULL);  // DISABLED - not essential
