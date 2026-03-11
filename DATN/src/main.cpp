@@ -42,7 +42,6 @@ HardwareSerial LORA_SER(1); // UART1
 
 volatile uint32_t g_send_interval_ms = 2000; // mặc định 2s (send interval)
 volatile bool g_tamper_alert = false;         // Tamper alert flag
-static uint32_t _seq = 0;
 
 // ---- Helper: Auto-increment node_id from EEPROM counter ----
 // Each device gets unique Transport-X (1-100) on first boot
@@ -103,7 +102,7 @@ void TaskTamperMonitor(void *pvParameters) {
       Serial.println("[TAMPER ALERT] BOX OPENED!");
       Serial.printf("[TAMPER] Vehicle: %s\r\n", gVehicleConfig.getDeviceId());
       Serial.printf("[TAMPER] Time: %lu ms\r\n", (unsigned long)millis());
-      Serial.printf("[TAMPER] Light Level: %u (THRESHOLD: 500)\r\n", light_level);
+      Serial.printf("[TAMPER] Light Level: %u (THRESHOLD: 850)\r\n", light_level);
     }
     
     // Monitor every 100ms
@@ -162,10 +161,9 @@ void TaskLoraSend(void *pv) {
     // ===== Build clean JSON telemetry (one line) =====
     char payload[512];
     int n = snprintf(payload, sizeof(payload),
-      "{\"vehicle_id\":\"%s\",\"timestamp\":%lu,\"seq\":%lu,\"temp\":%.2f,\"humidity\":%.2f,\"gps\":{\"lat\":%.4f,\"lng\":%.4f},\"tamper\":%d,\"light_level\":%u,\"accel_mag\":%.2f}\n",
+      "{\"vehicle_id\":\"%s\",\"timestamp\":%lu,\"temp\":%.2f,\"humidity\":%.2f,\"gps\":{\"lat\":%.4f,\"lng\":%.4f},\"tamper\":%d,\"light_level\":%u,\"accel_mag\":%.2f}\n",
       gVehicleConfig.getDeviceId(),
       (unsigned long)ts,
-      (unsigned long)_seq,
       isnan(temp) ? -999.0F : temp,
       isnan(hum) ? -999.0F : hum,
       lat,
@@ -186,8 +184,6 @@ void TaskLoraSend(void *pv) {
     } else {
       Serial.printf("[ERROR] snprintf failed! n=%d\r\n", n);
     }
-    
-    _seq++;
 
     // wait interval (can be updated by other mechanism if needed)
     vTaskDelay(pdMS_TO_TICKS(g_send_interval_ms));
