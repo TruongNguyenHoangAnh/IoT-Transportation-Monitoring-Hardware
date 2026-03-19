@@ -656,4 +656,316 @@ project/
 
 ---
 
-**Ready to implement RX_ESP32_Firestore folder with these specifications!**
+## 🎯 TASK BREAKDOWN FOR AI IMPLEMENTATION
+
+### **PHASE 1: RX ESP32 + Firestore Integration** ⚙️
+
+#### **Objective:**
+Create a new folder `RX_ESP32_Firestore/` that reads LoRa packets from ASR6601 RX gateway, parses JSON payload, and uploads telemetry data to Firebase Firestore in real-time.
+
+#### **Task 1.1: Project Setup**
+- **Action:** Create new PlatformIO ESP32 project structure
+- **Location:** `RX_ESP32_Firestore/` folder
+- **Steps:**
+  1. Create `platformio.ini` with dependencies: ArduinoJson, Firebase ESP32 Client
+  2. Create `src/` and `include/` directories
+  3. Configure board: `nodemcu-32s`, baud rate: `115200`
+  4. Add `.gitignore` entry for `firestore_secrets.h`
+
+#### **Task 1.2: Configuration Files**
+- **Create:** `src/config.h` with constants:
+  - WiFi SSID/Password
+  - Firebase project ID, API key, email, password
+  - Serial pins (RX=3, TX=1)
+  - Firestore collection paths: `/vehicles`, `/statistics`
+- **Create:** `firestore_secrets.h` (git-ignored) with Firebase credentials
+- **Notes:** All hardcoded values should come from config.h for easy deployment
+
+#### **Task 1.3: Serial Reader Module** 
+- **Create:** `src/serial_reader.h` + `src/serial_reader.cpp`
+- **Responsibility:** Parse 2-line RX gateway output
+- **Input Format:**
+  ```
+  [RX OK] node=1, seq=0, len=162, rssi=-95, snr=7
+  Payload: {"vehicle_id":"Transport-1",...}
+  ```
+- **Output Structure (RXPacket):**
+  ```cpp
+  struct RXPacket {
+    uint8_t node_id;      // 1-byte integer (0-255)
+    uint32_t seq;         // 4-byte sequence number
+    uint16_t len;         // Payload length in bytes
+    int16_t rssi;         // Signal strength (-120 to 0)
+    int8_t snr;           // Signal-to-noise ratio
+    String payload;       // JSON string
+  };
+  ```
+- **Key Function:** `bool readRXPacket(RXPacket& pkt)`
+  - Read first line: extract `[RX OK] node=X, seq=Y, len=Z, rssi=A, snr=B`
+  - Read second line: extract JSON from `Payload: {...}`
+  - Validate both lines present before returning true
+  - Handle timeout/incomplete data gracefully
+
+#### **Task 1.4: JSON Parser Module**
+- **Create:** `src/json_parser.h` + `src/json_parser.cpp`
+- **Input:** Payload string from RXPacket
+- **Output Structure (TelemetryData):**
+  ```cpp
+  struct TelemetryData {
+    String vehicle_id;        // "Transport-1", "Transport-2", etc.
+    uint32_t timestamp;       // From ESP32 millis()
+    uint32_t seq;             // Packet sequence
+    float temp, humidity;     // From DHT11
+    float accel_mag;          // From ADXL345
+    struct { float lat, lng, altitude; } gps;  // From GPS
+    uint16_t light_level;     // From LDR (0-1023)
+    uint8_t tamper;           // 0=closed, 1=open
+    String status;            // "OK", "ALARM", etc.
+  };
+  ```
+- **Key Function:** `bool parsePayload(const String& payloadStr, TelemetryData& data)`
+  - Use ArduinoJson to deserialize JSON
+  - Extract all fields with proper data types
+  - Handle missing fields gracefully (optional fields)
+  - Return false if JSON is malformed
+  - Log parse errors to serial for debugging
+
+#### **Task 1.5: Firestore Client Module**
+- **Create:** `src/firestore_client.h` + `src/firestore_client.cpp`
+- **Functionality:**
+  1. **Initialize Firebase:** Connect to FirebaseConfig with credentials
+  2. **Upload Telemetry Data:**
+     - Destination: `/vehicles/{vehicle_id}/telemetry/{timestamp}`
+     - Include all TelemetryData fields + gateway metadata (rssi, snr)
+     - Add server-side timestamp
+  3. **Update Statistics:**
+     - Destination: `/statistics/{vehicle_id}`
+     - Track: `last_seen`, `total_packets`, `packets_today`, `rssi_average`, `snr_average`, `tamper_events`, `temperature_avg`, etc.
+  4. **Error Handling:**
+     - Implement retry logic for failed uploads
+     - Queue packets to SPIFFS if WiFi is down
+     - Sync queued data when WiFi reconnects
+- **Key Functions:**
+  - `bool initializeFirebase()`
+  - `bool uploadTelemetry(const String& vehicleId, const TelemetryData& data, int16_t rssi, int8_t snr)`
+  - `bool updateStatistics(const String& vehicleId, const RXPacket& packet, const TelemetryData& data)`
+  - `bool clearOfflineQueue()` (if WiFi down scenario)
+
+#### **Task 1.6: WiFi Manager**
+- **Create:** Simple WiFi reconnection logic
+- **Requirement:** Auto-reconnect on WiFi loss (don't block main loop)
+- **Implementation:** 
+  - Check WiFi status in main loop
+  - Attempt reconnect if disconnected
+  - Log WiFi events (connected, disconnected, failed)
+  - Handle certificate validation for Firebase
+
+#### **Task 1.7: Main Loop** 
+- **File:** `src/main.cpp`
+- **Sequence:**
+  ```
+  1. Setup:
+     - Initialize Serial (115200)
+     - Initialize WiFi + Firebase
+     - Print startup message
+  
+  2. Loop (repeat every 100ms):
+     - Check if data available on serial
+     - Call readRXPacket() → extract metadata + payload
+     - Call parsePayload() → convert JSON to TelemetryData
+     - Call uploadTelemetry() → send to Firestore
+     - Call updateStatistics() → update vehicle stats
+     - Log status: [PACKET OK] or [PARSE ERROR] or [UPLOAD FAILED]
+  
+  3. Error Handling:
+     - JSON parse error → log & skip packet
+     - Firestore upload error → queue for retry (if offline)
+     - WiFi down → print warning, attempt reconnect
+  ```
+- **Serial Output Example:**
+  ```
+  [SETUP] RX_ESP32_Firestore v1.0 starting...
+  [WIFI] Connecting to MyNetwork...
+  [WIFI] Connected! IP: 192.168.1.42
+  [FIREBASE] Auth successful
+  
+  [RX PACKET] node_id=1, rssi=-95, snr=7
+  [JSON PARSE] vehicle_id=Transport-1, temp=2.00
+  [FIRESTORE] ✓ Uploaded /vehicles/Transport-1/telemetry/22964
+  [STATS] ✓ Updated /statistics/Transport-1
+  ```
+
+---
+
+### **PHASE 2: k-NN Anomaly Detection (Network Intrusion Detection)** 🧠
+
+#### **Objective:**
+Implement k-Nearest Neighbors machine learning algorithm to detect abnormal network patterns (jamming, spoofing, signal attacks) based on RSSI/SNR anomalies.
+
+#### **Task 2.1: Create Python Backend for k-NN**
+- **Location:** New folder `knn_anomaly_detector/` in project root
+- **Purpose:** Standalone Python script + later integration with RX ESP32 backend
+- **File:** `knn_anomaly_detector.py`
+
+#### **Task 2.2: Data Collection & Training Set**
+- **Requirement:** Parse historical RX log output to build training data
+- **Format to Parse:**
+  ```
+  [RX OK] node=1, seq=0, len=162, rssi=-67, snr=12
+  [RX OK] node=2, seq=1, len=155, rssi=-54, snr=13
+  [RX OK] node=1, seq=1, len=162, rssi=-65, snr=12
+  ```
+- **Features for k-NN:**
+  - RSSI (received signal strength): -120 to 0 dBm
+  - SNR (signal-to-noise ratio): 0-20+ dB
+  - Packet interval (time between consecutive packets from same node): ~2000ms
+  - Packet length (should be consistent): ~150-160 bytes
+- **Training Data Strategy:**
+  - Collect 50-100 normal packets from each vehicle
+  - Calculate feature statistics (mean, std dev)
+  - Flag outliers as anomalies (e.g., RSSI > 3σ from mean)
+
+#### **Task 2.3: k-NN Algorithm Implementation**
+- **Library:** Use `scikit-learn` (sklearn.neighbors.KNeighborsRegressor) or custom implementation
+- **Parameters:**
+  - k = 5 (neighbors to consider)
+  - distance metric = Euclidean
+  - features = [RSSI, SNR]
+- **Training:**
+  - Input: Normal LoRa packet observations (RSSI/SNR pairs)
+  - Output: Classify as normal or anomalous
+- **Anomaly Detection Logic:**
+  ```
+  for each new packet:
+    1. Extract RSSI, SNR
+    2. Find k=5 nearest neighbors in training set
+    3. Calculate distance to nearest neighbor
+    4. if distance > threshold → FLAG AS ANOMALY
+       else → normal packet
+  ```
+- **Threshold Tuning:**
+  - Set threshold based on historical data variability
+  - Example: If median distance = 5, threshold = 2x median = 10
+
+#### **Task 2.4: Anomaly Alert System**
+- **Detection Triggers:**
+  - **RSSI Anomaly:** Signal strength unusually strong (jamming) or weak (spoofing)
+  - **SNR Anomaly:** Noisy signal (interference attack)
+  - **Sequence Jump:** Gap in packet sequence (dropped packets)
+  - **Timing Anomaly:** Irregular packet intervals
+- **Alert Actions:**
+  1. Log anomaly to console + file
+  2. Store anomaly record in Firestore: `/anomalies/{timestamp}`
+  3. Push alert to mobile app (Firebase Cloud Messaging)
+  4. Update vehicle status: `status: "UNDER_ATTACK"` in statistics collection
+- **Alert Structure:**
+  ```json
+  {
+    "vehicle_id": "Transport-1",
+    "timestamp": 1234567890,
+    "anomaly_type": "RSSI_SPIKE",
+    "detected_value": -45,
+    "expected_range": [-75, -55],
+    "severity": "HIGH",
+    "description": "Possible jamming detected - signal strength unusually strong (-45dBm vs expected -65dBm)"
+  }
+  ```
+
+#### **Task 2.5: Data Storage for k-NN Training**
+- **Firestore Collection:** `/knn_training_data/{vehicle_id}/normal_packets`
+- **Structure:**
+  ```json
+  {
+    "timestamp": 1234567890,
+    "rssi": -67,
+    "snr": 12,
+    "source": "normal_operation"
+  }
+  ```
+- **Update Strategy:**
+  - Only store "normal" packets (no anomalies)
+  - Keep rolling 1000-packet window per vehicle
+  - Periodically retrain model with fresh data
+
+#### **Task 2.6: Integration with RX ESP32 Firestore**
+- **Path 1 (Phase 2a - Standalone):** Python script runs separately, reads Firestore, outputs alerts
+- **Path 2 (Phase 2b - Integrated):** Integrate k-NN into RX ESP32 main loop
+  - Option A: Call Python subprocess from ESP32 (not ideal - resource constraints)
+  - Option B: Upload anomaly detections from Python backend to Firestore (recommended)
+  - Option C: Pre-trained model compressed into ESP32 as binary (advanced)
+- **Recommended for Now:** Use Path 1 (standalone) + write alerts to Firestore
+
+#### **Task 2.7: Testing & Validation**
+- **Test Cases:**
+  1. Normal packets → should classify as non-anomalous
+  2. Simulated jamming (RSSI = -40 dBm) → should detect as anomaly
+  3. Simulated spoofing (sequence jump) → should detect as anomaly
+  4. High SNR noise (SNR > 20) → should detect as anomaly
+  5. Regular packet stream → no false positives
+- **Metrics to Track:**
+  - True Positive Rate (TRP): Anomalies correctly detected
+  - False Positive Rate (FPR): Normal packets incorrectly flagged
+  - Goal: TRP > 95%, FPR < 5%
+
+---
+
+### **IMPLEMENTATION ORDER (Recommended Sequence)**
+
+#### **Week 1:**
+1. ✅ Setup RX_ESP32_Firestore project structure (Task 1.1, 1.2)
+2. ✅ Implement serial reader for RX gateway output parsing (Task 1.3)
+3. ✅ Implement JSON parser for payload deserialization (Task 1.4)
+4. ✅ Test parsing with real RX gateway output
+
+#### **Week 2:**
+1. ✅ Implement Firestore client & authentication (Task 1.5)
+2. ✅ Implement WiFi manager & reconnection logic (Task 1.6)
+3. ✅ Implement main loop with end-to-end integration (Task 1.7)
+4. ✅ Test live upload to Firestore with actual RX packets
+
+#### **Week 3:**
+1. ✅ Create Python k-NN anomaly detector (Task 2.1-2.3)
+2. ✅ Collect training data from RX logs (Task 2.2)
+3. ✅ Implement alert system (Task 2.4)
+4. ✅ Test anomaly detection with simulated attacks
+
+#### **Week 4:**
+1. ✅ Integrate k-NN alerts into Firestore (Task 2.5)
+2. ✅ Setup Firebase Cloud Messaging for mobile alerts (Task 2.6)
+3. ✅ Full system testing & validation (Task 2.7)
+4. ✅ Deploy to production
+
+---
+
+### **Deliverables Checklist**
+
+#### **RX_ESP32_Firestore Folder:**
+- [x] `platformio.ini` - project config
+- [x] `src/main.cpp` - main entry point + loop
+- [x] `src/config.h` - constants + pins
+- [x] `src/serial_reader.h/cpp` - parse RX gateway output
+- [x] `src/json_parser.h/cpp` - parse JSON payload
+- [x] `src/firestore_client.h/cpp` - Firestore upload
+- [x] `src/wifi_manager.h/cpp` - WiFi handling
+- [x] `.gitignore` - exclude firestore_secrets.h
+- [x] `README.md` - setup instructions
+
+#### **knn_anomaly_detector Folder:**
+- [x] `knn_anomaly_detector.py` - main script
+- [x] `training_data.csv` - normal packet observations
+- [x] `requirements.txt` - Python dependencies (scikit-learn, firebase-admin)
+- [x] `config.py` - thresholds, k value, feature weights
+- [x] `README.md` - usage instructions
+
+#### **Testing:**
+- [x] Serial parsing tests (unit tests for readRXPacket)
+- [x] JSON parsing tests (unit tests for parsePayload)
+- [x] Firestore integration tests (mock Firebase)
+- [x] k-NN accuracy tests (confusion matrix, ROC curve)
+- [x] End-to-end integration test (live RX packets → Firestore → alerts)
+
+---
+
+**Ready for AI to begin implementation!** 🚀
+
+For questions on specific tasks, refer to the detailed sections above. All dependencies, file structures, and code examples are provided.

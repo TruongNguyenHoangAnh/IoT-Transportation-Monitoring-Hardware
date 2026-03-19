@@ -90,6 +90,18 @@ bool ADXLModule::read(float &xg, float &yg, float &zg) {
   }
 
   // Fallback: direct I2C read
+  // ⚠️ IMPORTANT: Check if I2C communication succeeded
+  uint8_t test_buf[1];
+  Wire.beginTransmission(DEVICE_ADDRESS);
+  Wire.write(REG_DATAX0);
+  if (Wire.endTransmission() != 0) {
+    // I2C error - sensor not responding
+    xg = -999.0f;
+    yg = -999.0f;
+    zg = -999.0f;
+    return false;  // Signal error to caller
+  }
+
   readXYZ();
   xg = x * G_PER_LSB;
   yg = y * G_PER_LSB;

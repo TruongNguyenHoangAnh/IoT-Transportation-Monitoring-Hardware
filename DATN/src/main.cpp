@@ -139,7 +139,20 @@ void TaskLoraSend(void *pv) {
     float temp = dht.readTemperature();
     float hum  = dht.readHumidity();
     float ax = NAN, ay = NAN, az = NAN;
-    adxl.read(ax, ay, az);
+    bool adxl_ok = adxl.read(ax, ay, az);  // Check I2C status
+    
+    // ⚠️ Error handling: If sensor fails, set to error sentinel (-999)
+    if (isnan(temp) || temp < -100 || temp > 150) {
+      Serial.println("[DHT11-ERROR] Sensor read failed (no valid data)");
+      temp = -999.0f;
+    }
+    if (isnan(hum) || hum < 0 || hum > 100) {
+      hum = -999.0f;
+    }
+    if (!adxl_ok) {
+      Serial.println("[ADXL345-ERROR] I2C communication failed - sensor not responding");
+      ax = ay = az = -999.0f;
+    }
     
     // read tamper/light status
     uint16_t light_level = ldr.readSmoothed();
