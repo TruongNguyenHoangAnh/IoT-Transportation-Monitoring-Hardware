@@ -28,7 +28,7 @@
 #endif
 
 // GPS: UART2 RX=16, TX=17 @ 9600
-GPSNeo6M  gps(16, 17, 38400);
+GPSNeo6M  gps(16, 17, 9600);
 DHTModule dht(DHTPIN, DHTTYPE);
 ADXLModule adxl; // ADXL345
 LDRModule ldr(LDR_PIN); // Light sensor for tamper detection
