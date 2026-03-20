@@ -28,7 +28,7 @@
 #endif
 
 // GPS: UART2 RX=16, TX=17 @ 9600
-GPSNeo6M  gps(16, 17, 9600);
+GPSNeo6M  gps(16, 17, 38400);
 DHTModule dht(DHTPIN, DHTTYPE);
 ADXLModule adxl; // ADXL345
 LDRModule ldr(LDR_PIN); // Light sensor for tamper detection
@@ -286,7 +286,7 @@ void setup() {
 void loop() {
   // ---- Cập nhật GPS ----
   gps.read();
-  gps.printDebugStats();  // ⚠️ DEBUG: Print GPS connection status
+  // gps.printDebugStats();  // ⚠️ DEBUG: Disabled - clean output for production
 
   // Save GPS data to shared struct if location updated
   if (gps.updated()) {
