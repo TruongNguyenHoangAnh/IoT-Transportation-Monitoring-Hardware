@@ -12,7 +12,7 @@ void GPSNeo6M::begin() {
 
 void GPSNeo6M::read() {
   // ⚠️ DEBUG: Set to 1 to see raw NMEA, 0 to disable
-  #define GPS_DEBUG_RAW 0
+  #define GPS_DEBUG_RAW 1
   
   while (_serial.available() > 0) {
     char c = _serial.read();
