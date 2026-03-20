@@ -297,14 +297,14 @@ void loop() {
       sensorData.speed = gps.gpsObject().speed.kmph();
       xSemaphoreGive(sensorDataMutex);
       
-      // Debug: Print when GPS updates (less spam)
-      static uint32_t last_gps_update = 0;
-      uint32_t now = millis();
-      if (now - last_gps_update >= 5000) {  // Print every 5s
-        Serial.printf("[GPS] Fix: %.4f, %.4f (sats:%lu speed:%.1f km/h)\r\n",
-          sensorData.lat, sensorData.lng, sensorData.sats, sensorData.speed);
-        last_gps_update = now;
-      }
+      // Debug: GPS Fix printing disabled for production output
+      // static uint32_t last_gps_update = 0;
+      // uint32_t now = millis();
+      // if (now - last_gps_update >= 5000) {  // Print every 5s
+      //   Serial.printf("[GPS] Fix: %.4f, %.4f (sats:%lu speed:%.1f km/h)\r\n",
+      //     sensorData.lat, sensorData.lng, sensorData.sats, sensorData.speed);
+      //   last_gps_update = now;
+      // }
     }
   }
 
