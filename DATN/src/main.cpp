@@ -47,8 +47,19 @@ volatile bool g_tamper_alert = false;         // Tamper alert flag
 // Each device gets unique Transport-X (1-100) on first boot
 // Counter stored in EEPROM byte 0 tracks next available node_id
 // Magic byte at EEPROM byte 1 detects if using new auto-increment system
+// 
+// ⚠️ OVERRIDE: Set FORCE_NODE_ID to 0 to use auto-increment, or 1-100 to force specific node
+#define FORCE_NODE_ID 2  // Set to 1 for Transport-1, 2 for Transport-2, etc. | 0 = auto-increment from EEPROM
+
 void detectOrGenerateNodeId(HardwareSerial &lora_uart) {
   (void)lora_uart;  // Unused parameter (TX no longer broadcasts node_id text)
+  
+  // ⚠️ DEBUG: Override for testing specific nodes
+  if (FORCE_NODE_ID > 0 && FORCE_NODE_ID <= 100) {
+    Serial.printf("[SYNC] FORCE_NODE_ID enabled - Using Transport-%d (override mode)\r\n", FORCE_NODE_ID);
+    gVehicleConfig.setDeviceIdFromNodeId(FORCE_NODE_ID);
+    return;
+  }
   
   Serial.println("[SYNC] Auto-assigning node_id from EEPROM counter...");
   
@@ -275,6 +286,7 @@ void setup() {
 void loop() {
   // ---- Cập nhật GPS ----
   gps.read();
+  gps.printDebugStats();  // ⚠️ DEBUG: Print GPS connection status
 
   // Save GPS data to shared struct if location updated
   if (gps.updated()) {

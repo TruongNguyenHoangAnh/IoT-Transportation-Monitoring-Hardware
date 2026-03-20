@@ -11,8 +11,25 @@ void GPSNeo6M::begin() {
 }
 
 void GPSNeo6M::read() {
+  // ⚠️ DEBUG: Set to 1 to see raw NMEA, 0 to disable
+  #define GPS_DEBUG_RAW 0
+  
   while (_serial.available() > 0) {
-    _gps.encode(_serial.read());
+    char c = _serial.read();
+    _gps.encode(c);
+    
+    #if GPS_DEBUG_RAW
+    // Capture raw NMEA output (debug only)
+    static char nmea_buffer[200];
+    static uint16_t nmea_idx = 0;
+    if (c == '\n') {
+      nmea_buffer[nmea_idx] = '\0';
+      Serial.printf("[GPS-RAW] %s", nmea_buffer);
+      nmea_idx = 0;
+    } else if (nmea_idx < sizeof(nmea_buffer) - 1) {
+      nmea_buffer[nmea_idx++] = c;
+    }
+    #endif
   }
 }
 
@@ -47,4 +64,29 @@ bool GPSNeo6M::buildTimestamp(char* buf, size_t n) {
     return true;
   }
   return false;
+}
+
+// ⚠️ DEBUG: Print GPS stats to troubleshoot connection issues
+void GPSNeo6M::printDebugStats() {
+  static uint32_t last_print = 0;
+  uint32_t now = millis();
+  if (now - last_print < 3000) return;  // Print every 3s
+  last_print = now;
+  
+  uint32_t bytes_available = _serial.available();
+  uint32_t chars_processed = _gps.charsProcessed();
+  uint32_t sentences_with_fix = _gps.sentencesWithFix();
+  bool has_fix = hasFix();
+  
+  Serial.println("\n╔═══ GPS DEBUG STATS ═══╗");
+  Serial.printf("║ Serial Bytes Waiting: %lu\r\n", bytes_available);
+  Serial.printf("║ Chars Processed: %lu\r\n", chars_processed);
+  Serial.printf("║ Sentences with Fix: %lu\r\n", sentences_with_fix);
+  Serial.printf("║ Location Valid: %s\r\n", _gps.location.isValid() ? "YES" : "NO");
+  Serial.printf("║ Satellites: %d\r\n", _gps.satellites.value());
+  Serial.printf("║ Has Fix: %s\r\n", has_fix ? "YES" : "NO");
+  if (has_fix) {
+    Serial.printf("║ Lat/Lng: %.6f, %.6f\r\n", _gps.location.lat(), _gps.location.lng());
+  }
+  Serial.println("╚═══════════════════════╝\n");
 }

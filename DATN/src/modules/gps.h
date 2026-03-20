@@ -26,6 +26,11 @@ public:
   inline double   latitude()    { return _gps.location.lat(); }
   inline double   longitude()   { return _gps.location.lng(); }
   inline uint32_t satellites()  { return _gps.satellites.isValid() ? (uint32_t)_gps.satellites.value() : 0; }
+  
+  // Debug helpers
+  void printDebugStats();
+  uint32_t getCharsProcessed() { return _gps.charsProcessed(); }
+  uint32_t getSentencesWithFix() { return _gps.sentencesWithFix(); }
 
   // Trả chuỗi thời gian GPS "YYYY-MM-DD HH:MM:SS" (return true nếu hợp lệ)
   bool buildTimestamp(char* buf, size_t n);
@@ -35,6 +40,7 @@ private:
   long _baud;
   HardwareSerial _serial;
   TinyGPSPlus _gps;
+  uint32_t _last_bytes_available = 0;
 };
 
 #endif
