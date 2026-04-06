@@ -59,7 +59,7 @@ typedef enum { LOWPOWER, RX, RX_TIMEOUT, RX_ERROR, TX, TX_TIMEOUT } States_t;
 
 #define RX_TIMEOUT_VALUE        3000
 #define BUFFER_SIZE             256
-#define CHUNK_MAX               200
+#define CHUNK_MAX               240
 
 // ===== SECURITY CONSTANTS (Priority 1 & 2) =====
 #define MAX_JUMP_THRESHOLD          5000   /* Priority 2: Prevent desynchronization */

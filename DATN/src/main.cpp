@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include "modules/security.h"
 #include <Wire.h>
 #include <TinyGPSPlus.h>
 #include <esp_system.h>   // For chip ID functions
@@ -100,6 +101,19 @@ void detectOrGenerateNodeId(HardwareSerial &lora_uart) {
   gVehicleConfig.setDeviceIdFromNodeId(node_id);
 }
 
+static uint32_t getVehicleLoraSendDelayMs() {
+  uint8_t veh_num = gVehicleConfig.getVehicleNumber();
+  const uint32_t slot_ms = 250;
+  static const uint8_t slot_order[8] = { 0, 4, 2, 6, 1, 5, 3, 7 };
+
+  if (veh_num == 0) {
+    return 0;
+  }
+
+  uint8_t slot_index = (veh_num - 1) % 8;
+  return slot_order[slot_index] * slot_ms;
+}
+
 // ---- Task: Monitor tamper and send alert if detected ----
 void TaskTamperMonitor(void *pvParameters) {
   for (;;) {
@@ -140,6 +154,13 @@ void TaskLoraSend(void *pv) {
   delay(100);
   while (LORA_SER.available()) LORA_SER.read();
 
+  // Apply startup offset for Transport-1 / Transport-2 to avoid collision
+  uint32_t send_delay = getVehicleLoraSendDelayMs();
+  if (send_delay > 0) {
+    Serial.printf("[SYNC] Transport-%u delayed send start by %lums\r\n", gVehicleConfig.getVehicleNumber(), (unsigned long)send_delay);
+    vTaskDelay(pdMS_TO_TICKS(send_delay));
+  }
+
   // only print debug to Serial every N sends to reduce terminal spam
   const uint8_t DEBUG_PRINT_EVERY_N = 10; // change as needed
   
@@ -179,32 +200,41 @@ void TaskLoraSend(void *pv) {
       xSemaphoreGive(sensorDataMutex);
     }
 
-    // build JSON payload for LoRa
+    // build minified JSON payload for LoRa
     uint32_t ts = millis();
-    
-    // ===== Build clean JSON telemetry (one line) =====
-    char payload[512];
+    // uint32_t seq = tx_sequence; // nếu có biến seq, lấy đúng thứ tự gói
+    char payload[256];
     int n = snprintf(payload, sizeof(payload),
-      "{\"vehicle_id\":\"%s\",\"timestamp\":%lu,\"temp\":%.2f,\"humidity\":%.2f,\"gps\":{\"lat\":%.4f,\"lng\":%.4f},\"tamper\":%d,\"light_level\":%u,\"accel_mag\":%.2f}\n",
+      "{\"v\":\"%s\",\"ts\":%lu,\"t\":%.2f,\"h\":%.2f,\"a\":%.2f,\"l\":%u,\"x\":%d,\"la\":%.4f,\"lo\":%.4f}",
       gVehicleConfig.getDeviceId(),
       (unsigned long)ts,
       isnan(temp) ? -999.0F : temp,
       isnan(hum) ? -999.0F : hum,
-      lat,
-      lng,
-      is_tamper ? 1 : 0,
+      isnan(ax) ? -999.0F : sqrt(ax*ax + ay*ay + az*az),
       light_level,
-      isnan(ax) ? -999.0F : sqrt(ax*ax + ay*ay + az*az)
+      is_tamper ? 1 : 0,
+      lat,
+      lng
     );
     
-    // write to LoRa module UART (LORA_SER on UART1)
+
+    // ===== MÃ HÓA HMAC-SHA256 lên JSON payload =====
     if (n > 0) {
-      int written = LORA_SER.write((uint8_t*)payload, n);  // Send JSON to LoRa TX module via UART1
+      String jsonPayload(payload);
+      String signature = hmacSha256(jsonPayload);
+      String signedJson = jsonPayload;
+      if (signedJson.endsWith("}")) {
+        signedJson = signedJson.substring(0, signedJson.length() - 1);
+      }
+      signedJson += ",\"sig\":\"" + signature + "\"}";
+
+      // ===== MÃ HÓA AES-128 CBC + BASE64 trước khi gửi =====
+      String securePayload = encryptDataToAESBase64(signedJson);
+      LORA_SER.println(securePayload); // Gửi qua UART dạng base64 an toàn
       LORA_SER.flush();
-      
-      // Debug output to Serial console (for monitoring, not LoRa)
-      Serial.println("[ESP32->LORA] JSON sent to LoRa TX module (UART1):");
-      Serial.println(payload);
+      Serial.print("[ESP32->LORA] AES-128 CBC + BASE64 payload sent (len: ");
+      Serial.print(securePayload.length());
+      Serial.println(")");
     } else {
       Serial.printf("[ERROR] snprintf failed! n=%d\r\n", n);
     }
