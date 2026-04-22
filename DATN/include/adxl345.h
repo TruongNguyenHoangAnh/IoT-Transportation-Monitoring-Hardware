@@ -1,5 +1,6 @@
 
-#pragma once
+#ifndef ADXL345_H
+#define ADXL345_H
 
 #include <Arduino.h>
 #include <Adafruit_Sensor.h>
@@ -20,3 +21,5 @@ private:
 
 // Helper to start the ADXL telemetry task (implemented in adxl345.cpp)
 void startAdxlTelemetry(unsigned long stackSize, UBaseType_t priority);
+
+#endif // ADXL345_H

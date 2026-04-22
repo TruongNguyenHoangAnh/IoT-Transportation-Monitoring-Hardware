@@ -58,8 +58,8 @@
 typedef enum { LOWPOWER, RX, RX_TIMEOUT, RX_ERROR, TX, TX_TIMEOUT } States_t;
 
 #define RX_TIMEOUT_VALUE        3000
-#define BUFFER_SIZE             256
-#define CHUNK_MAX               240
+#define BUFFER_SIZE             280
+#define CHUNK_MAX               270
 
 // ===== SECURITY CONSTANTS (Priority 1 & 2) =====
 #define MAX_JUMP_THRESHOLD          5000   /* Priority 2: Prevent desynchronization */
@@ -261,7 +261,7 @@ static void parse_and_validate_packet(const uint8_t* raw, uint16_t raw_len,
     }
     */
 
-    // ✅ All checks passed!
+    // All checks passed!
     pkt->valid = 1;
     node->last_seq = pkt->seq;
     node->last_rssi = (int8_t)RssiValue;
@@ -446,8 +446,7 @@ void OnRxDone( uint8_t *payload, uint16_t size, int16_t rssi, int8_t snr )
     LoraLen = use_len;
     RssiValue = rssi;
     SnrValue = snr;
-    
-    /* State machine will call parse_and_validate_packet() */
+
     State = RX;
 }
 

@@ -1,5 +1,6 @@
 
-#pragma once
+#ifndef DHT11_MODULE_H
+#define DHT11_MODULE_H
 
 #include <Arduino.h>
 #include <DHT.h>
@@ -16,3 +17,5 @@ private:
 
 // Helper to start the DHT FreeRTOS task from other files
 void startDhtTask(unsigned long stackSize, UBaseType_t priority);
+
+#endif // DHT11_MODULE_H

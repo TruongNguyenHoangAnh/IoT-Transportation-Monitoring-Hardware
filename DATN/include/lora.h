@@ -1,4 +1,5 @@
-#pragma once
+#ifndef LORA_AT_H
+#define LORA_AT_H
 #include <Arduino.h>
 #include <HardwareSerial.h>
 
@@ -29,3 +30,5 @@ private:
   bool waitFor(const String &needle, uint32_t timeout_ms, String *rsp = nullptr);
   static String stripSpaces(const String &s);
 };
+
+#endif // LORA_AT_H

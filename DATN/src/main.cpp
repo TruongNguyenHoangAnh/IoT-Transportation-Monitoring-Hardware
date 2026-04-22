@@ -1,17 +1,21 @@
 #include <Arduino.h>
-#include "modules/security.h"
+#include "security.h"
+
+// Uncomment to enable ADXL data capture mode for labelled dataset collection
+// #define CAPTURE_ADXL_DATA 1
+
 #include <Wire.h>
 #include <TinyGPSPlus.h>
 #include <esp_system.h>   // For chip ID functions
 
-#include "modules/gps.h"
-#include "modules/dht11.h"
-#include "modules/adxl345.h"
-#include "modules/ldr.h"
-#include "modules/vehicle_config.h"
-// #include "modules/local_memory.h"   // SD logging - DISABLED (not needed for real-time telemetry)
-#include "modules/sensor_Data.h"    // Shared sensor data struct + mutex
-// #include "modules/lora.h"      // <-- bỏ wrapper LoRa AT (không cần)
+#include "gps.h"
+#include "dht11.h"
+#include "adxl345.h"
+#include "ldr.h"
+#include "vehicle_config.h"
+// #include "local_memory.h"   // SD logging - DISABLED (not needed for real-time telemetry)
+#include "sensor_Data.h"    // Shared sensor data struct + mutex
+// #include "lora.h"      // <-- bỏ wrapper LoRa AT (không cần)
 
 //
 // ===== Pins / Config =====
@@ -167,12 +171,24 @@ void TaskLoraSend(void *pv) {
   uint32_t last_tamper_alert_sent = 0;
 
   for (;;) {
-    // read sensors
-    float temp = dht.readTemperature();
-    float hum  = dht.readHumidity();
-    float ax = NAN, ay = NAN, az = NAN;
-    bool adxl_ok = adxl.read(ax, ay, az);  // Check I2C status
-    
+    // read sensor values from shared sensorData struct (thread-safe)
+    float temp = -999.0f;
+    float hum = -999.0f;
+    float accel_g = -999.0f;
+    bool adxl_ok = false;
+    bool shock = false;
+    bool is_moving = false;
+
+    if (xSemaphoreTake(sensorDataMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+      temp = sensorData.temp;
+      hum = sensorData.hum;
+      accel_g = sensorData.accel;
+      shock = sensorData.shock_detected;
+      is_moving = sensorData.is_moving;
+      xSemaphoreGive(sensorDataMutex);
+      adxl_ok = (accel_g > -900.0f);
+    }
+
     // ⚠️ Error handling: If sensor fails, set to error sentinel (-999)
     if (isnan(temp) || temp < -100 || temp > 150) {
       Serial.println("[DHT11-ERROR] Sensor read failed (no valid data)");
@@ -182,8 +198,8 @@ void TaskLoraSend(void *pv) {
       hum = -999.0f;
     }
     if (!adxl_ok) {
-      Serial.println("[ADXL345-ERROR] I2C communication failed - sensor not responding");
-      ax = ay = az = -999.0f;
+      Serial.println("[ADXL345-ERROR] Sensor data unavailable or not ready");
+      accel_g = -999.0f;
     }
     
     // read tamper/light status
@@ -203,14 +219,14 @@ void TaskLoraSend(void *pv) {
     // build minified JSON payload for LoRa
     uint32_t ts = millis();
     // uint32_t seq = tx_sequence; // nếu có biến seq, lấy đúng thứ tự gói
-    char payload[256];
+    char payload[320];
     int n = snprintf(payload, sizeof(payload),
-      "{\"v\":\"%s\",\"ts\":%lu,\"t\":%.2f,\"h\":%.2f,\"a\":%.2f,\"l\":%u,\"x\":%d,\"la\":%.4f,\"lo\":%.4f}",
+      "{\"v\":\"%s\",\"ts\":%lu,\"t\":%.1f,\"h\":%.1f,\"a\":%.2f,\"l\":%u,\"x\":%d,\"la\":%.5f,\"lo\":%.5f}",
       gVehicleConfig.getDeviceId(),
       (unsigned long)ts,
       isnan(temp) ? -999.0F : temp,
       isnan(hum) ? -999.0F : hum,
-      isnan(ax) ? -999.0F : sqrt(ax*ax + ay*ay + az*az),
+      (accel_g < -900.0f) ? -999.0F : accel_g,
       light_level,
       is_tamper ? 1 : 0,
       lat,
@@ -239,7 +255,6 @@ void TaskLoraSend(void *pv) {
       Serial.printf("[ERROR] snprintf failed! n=%d\r\n", n);
     }
 
-    // wait interval (can be updated by other mechanism if needed)
     vTaskDelay(pdMS_TO_TICKS(g_send_interval_ms));
   }
 }
@@ -248,22 +263,24 @@ void setup() {
   Serial.begin(115200);
   delay(2000);
   
-  // Initialize EEPROM (needed for stable node_id storage)
-  EEPROM.begin(512);
-  
-// Serial.printf("\r\n");
-  // Serial.printf("╔═══════════════════════════════════════════════════════╗\r\n");
-  // Serial.printf("║   AMMO TRANSPORT MONITORING SYSTEM - NODE STARTUP    ║\r\n");
-  // Serial.printf("║              (Phase 2: Multi-Vehicle)                ║\r\n");
-  // Serial.printf("╚═══════════════════════════════════════════════════════╝\r\n");
-  // Serial.printf("\r\n");
-  
+  EEPROM.begin(512); 
   Serial.println("[INIT] Initializing modules...");
 
-  // Create global sensor data mutex (CRITICAL for thread safety!)
   sensorDataMutex = xSemaphoreCreateMutex();
   if (sensorDataMutex == NULL) {
     Serial.println("[ERROR] Failed to create sensorDataMutex!");
+  }
+
+  // Initialize sensorData sentinel values before tasks start
+  if (sensorDataMutex != NULL) {
+    if (xSemaphoreTake(sensorDataMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+      sensorData.temp = -999.0f;
+      sensorData.hum = -999.0f;
+      sensorData.accel = -999.0f;
+      sensorData.shock_detected = false;
+      sensorData.is_moving = false;
+      xSemaphoreGive(sensorDataMutex);
+    }
   }
 
   // Initialize vehicle configuration (loads from EEPROM or uses default)
@@ -300,7 +317,7 @@ void setup() {
   xTaskCreate(TaskTamperMonitor,    "TamperMon",  2048, NULL, 2, NULL);
   
   startDhtTask(2048, 1);        // DHT11 background task
-  // startAdxlTelemetry(4096, 1);  // ADXL345 telemetry task - DISABLED (not used for JSON)
+  startAdxlTelemetry(4096, 1);  // ADXL345 background task to populate shared sensorData
 
   // create Lora sender task
   xTaskCreate(TaskLoraSend, "LoraSend", 4096, NULL, 1, NULL);
@@ -326,15 +343,6 @@ void loop() {
       sensorData.sats = gps.satellites();
       sensorData.speed = gps.gpsObject().speed.kmph();
       xSemaphoreGive(sensorDataMutex);
-      
-      // Debug: GPS Fix printing disabled for production output
-      // static uint32_t last_gps_update = 0;
-      // uint32_t now = millis();
-      // if (now - last_gps_update >= 5000) {  // Print every 5s
-      //   Serial.printf("[GPS] Fix: %.4f, %.4f (sats:%lu speed:%.1f km/h)\r\n",
-      //     sensorData.lat, sensorData.lng, sensorData.sats, sensorData.speed);
-      //   last_gps_update = now;
-      // }
     }
   }
 

@@ -1,5 +1,6 @@
 #include "dht11.h"
 #include "vehicle_config.h"
+#include "sensor_Data.h"
 
 // ===== DISABLED: WiFi + MQTT (not needed for real-time sensor data) =====
 // #include <WiFi.h>
@@ -58,12 +59,13 @@ void TaskDHT11(void *pvParameters) {
       h = -999.0f;
     }
 
-    // ===== DISABLED: Save to sensorData (not used - TaskLoraSend reads directly from dht) =====
-    // if (xSemaphoreTake(sensorDataMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
-    //   sensorData.temp = t;
-    //   sensorData.humidity = h;
-    //   xSemaphoreGive(sensorDataMutex);
-    // }
+    if (xSemaphoreTake(sensorDataMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+      sensorData.temp = t;
+      sensorData.hum = h;
+      xSemaphoreGive(sensorDataMutex);
+    } else {
+      Serial.println("[DHT11] Failed to lock sensorDataMutex");
+    }
 
     // Debug output (every 5s)
     if (t != -999.0f && h != -999.0f) {

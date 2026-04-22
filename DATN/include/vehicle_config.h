@@ -1,4 +1,5 @@
-#pragma once
+#ifndef VEHICLE_CONFIG_H
+#define VEHICLE_CONFIG_H
 #include <Arduino.h>
 #include <EEPROM.h>
 
@@ -54,3 +55,5 @@ private:
 
 // Global instance
 extern VehicleConfig gVehicleConfig;
+
+#endif // VEHICLE_CONFIG_H

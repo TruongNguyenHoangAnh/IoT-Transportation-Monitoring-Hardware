@@ -1,30 +1,23 @@
 #ifndef SENSOR_DATA_H
 #define SENSOR_DATA_H
 
-#include <Arduino.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 
 struct SensorData {
-    // GPS Data
-    double lat = 0.0;
-    double lng = 0.0;
-    uint32_t sats = 0;
-    float speed = 0.0; 
-
-    //Environmental Data
-    float temp = 0.0;
-    float hum = 0.0;
-
-    //Motion Data
-    float accel_mag = false;
-    bool shock_detected = false;
-    bool is_moving = false;
-
-    //System
-    uint32_t timestamp = 0;
+    double lat;              // GPS latitude
+    double lng;              // GPS longitude
+    uint32_t sats;           // satellite count
+    float speed;             // GPS speed (km/h)
+    float temp;              // temperature (°C)
+    float hum;               // humidity (%)
+    float accel;            // acceleration magnitude in g
+    bool shock_detected;     // ADXL345 shock
+    bool is_moving;          // motion flag
 };
 
-// instance Global and Mutex
+// Global sensor data + mutex
 extern SensorData sensorData;
-extern SemaphoreHandle_t sysDataMutex;
+extern SemaphoreHandle_t sensorDataMutex;
 
-#endif 
+#endif

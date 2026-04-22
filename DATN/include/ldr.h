@@ -1,4 +1,5 @@
-#pragma once
+#ifndef LDR_MODULE_H
+#define LDR_MODULE_H
 #include <Arduino.h>
 
 /**
@@ -56,3 +57,5 @@ private:
     
     uint16_t calculateAverage();
 };
+
+#endif // LDR_MODULE_H
