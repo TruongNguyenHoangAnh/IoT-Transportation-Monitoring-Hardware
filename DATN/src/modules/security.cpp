@@ -13,7 +13,7 @@ static const uint8_t aes_iv[16] = {
     0x29,0x3A,0x4B,0x5C,0x6D,0x7E,0x8F,0x90
 };
 
-#define HMAC_SECRET "your_hmac_secret_here"
+#define HMAC_SECRET "datn_252_secret_key"
 
 String encryptDataToAESBase64(const String& jsonStr) {
     mbedtls_aes_context aes;

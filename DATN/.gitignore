@@ -3,3 +3,15 @@
 .vscode/c_cpp_properties.json
 .vscode/launch.json
 .vscode/ipch
+
+# Security attack/replay local tooling and artifacts
+attack_hmac_aes.py
+attack_hmac_aes_instructions.txt
+inject_raw_packet.py
+payload.txt
+gateway_rx_log.txt
+attack_outputs/
+
+# Python cache artifacts
+__pycache__/
+*.pyc
