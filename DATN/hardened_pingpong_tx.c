@@ -93,6 +93,25 @@ static uint8_t LOCAL_NODE_ID = 0;
 #define UART_INST UART0
 #define UART_BAUD 115200
 
+#define SECRET_KEY_LEN 16
+static const uint8_t SECRET_KEY[SECRET_KEY_LEN] = {
+    0x13,0x37,0xAA,0x55,0x99,0x42,0xDE,0xAD,
+    0xBE,0xEF,0x77,0x21,0x66,0x88,0xCC,0x10
+};
+
+static uint16_t compute_auth_tag(uint8_t node_id, uint32_t seq, const uint8_t* payload, uint16_t len) {
+    uint8_t auth_buf[BUFFER_SIZE];
+    int p = 0;
+    memcpy(&auth_buf[p], SECRET_KEY, SECRET_KEY_LEN); p += SECRET_KEY_LEN;
+    auth_buf[p++] = node_id;
+    auth_buf[p++] = (seq >> 0) & 0xFF;
+    auth_buf[p++] = (seq >> 8) & 0xFF;
+    auth_buf[p++] = (seq >> 16) & 0xFF;
+    auth_buf[p++] = (seq >> 24) & 0xFF;
+    memcpy(&auth_buf[p], payload, len); p += len;
+    return crc16_calc(auth_buf, p);
+}
+
 static char uart_json_buffer[300];
 static uint16_t uart_json_idx = 0;
 
@@ -218,25 +237,20 @@ static void radio_send_blocking(const uint8_t* data, uint16_t len)
     while (!txDone) { Radio.IrqProcess(); }
 }
 
-static void send_enhanced_secure_packet(const uint8_t* plaintext, uint16_t plain_len)
-{
-    if (plain_len > CHUNK_MAX) {
-        printf("ERROR: Payload too large (%u > %u bytes)\r\n", plain_len, CHUNK_MAX);
-        return;
-    }
+static void send_enhanced_secure_packet(const uint8_t* plaintext, uint16_t plain_len) {
+    if (plain_len > CHUNK_MAX) return;
 
     uint8_t packet[BUFFER_SIZE];
     int pkt_pos = 0;
+    uint32_t current_seq = tx_sequence;
 
     packet[pkt_pos++] = LOCAL_NODE_ID;
-
-    packet[pkt_pos++] = (tx_sequence >>  0) & 0xFF;
-    packet[pkt_pos++] = (tx_sequence >>  8) & 0xFF;
-    packet[pkt_pos++] = (tx_sequence >> 16) & 0xFF;
-    packet[pkt_pos++] = (tx_sequence >> 24) & 0xFF;
-
-    uint32_t sent_seq = tx_sequence;
-    tx_sequence++;
+    packet[pkt_pos++] = (current_seq >>  0) & 0xFF;
+    packet[pkt_pos++] = (current_seq >>  8) & 0xFF;
+    packet[pkt_pos++] = (current_seq >> 16) & 0xFF;
+    packet[pkt_pos++] = (current_seq >> 24) & 0xFF;
+    
+    tx_sequence++; // Tăng seq cho gói tiếp theo
 
     packet[pkt_pos++] = (plain_len >> 0) & 0xFF;
     packet[pkt_pos++] = (plain_len >> 8) & 0xFF;
@@ -244,17 +258,13 @@ static void send_enhanced_secure_packet(const uint8_t* plaintext, uint16_t plain
     memcpy(&packet[pkt_pos], plaintext, plain_len);
     pkt_pos += plain_len;
 
-    uint16_t crc = crc16_calc(plaintext, plain_len);
-    packet[pkt_pos++] = (crc >> 0) & 0xFF;
-    packet[pkt_pos++] = (crc >> 8) & 0xFF;
+    // AUTH TAG (Thay thế cho CRC cũ)
+    uint16_t auth = compute_auth_tag(LOCAL_NODE_ID, current_seq, plaintext, plain_len);
+    packet[pkt_pos++] = (auth >> 0) & 0xFF;
+    packet[pkt_pos++] = (auth >> 8) & 0xFF;
 
     radio_send_blocking(packet, (uint16_t)pkt_pos);
-
-    printf("[TX SECURE] Vehicle=%u, seq=%lu, len=%u, crc=0x%04X\r\n",
-           (unsigned)LOCAL_NODE_ID,
-           (unsigned long)sent_seq,
-           plain_len,
-           (unsigned)crc);
+    printf("[TX SECURE] Node=%u, seq=%lu, AUTH=0x%04X\r\n", LOCAL_NODE_ID, (unsigned long)current_seq, auth);
 }
 
 static void OnTxDone(void)

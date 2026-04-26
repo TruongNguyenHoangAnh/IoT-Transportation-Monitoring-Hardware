@@ -61,6 +61,26 @@ typedef enum { LOWPOWER, RX, RX_TIMEOUT, RX_ERROR, TX, TX_TIMEOUT } States_t;
 #define ANTI_REPLAY_WINDOW_SEC      300
 #define CLOCK_SKEW_TOLERANCE_SEC    5
 #define MAX_NODES                   10
+#define WINDOW_SIZE 32
+
+#define SECRET_KEY_LEN 16
+static const uint8_t SECRET_KEY[SECRET_KEY_LEN] = {
+    0x13,0x37,0xAA,0x55,0x99,0x42,0xDE,0xAD,
+    0xBE,0xEF,0x77,0x21,0x66,0x88,0xCC,0x10
+};
+
+static uint16_t compute_auth_tag(uint8_t node_id, uint32_t seq, const uint8_t* payload, uint16_t len) {
+    uint8_t auth_buf[BUFFER_SIZE];
+    int p = 0;
+    memcpy(&auth_buf[p], SECRET_KEY, SECRET_KEY_LEN); p += SECRET_KEY_LEN;
+    auth_buf[p++] = node_id;
+    auth_buf[p++] = (seq >> 0) & 0xFF;
+    auth_buf[p++] = (seq >> 8) & 0xFF;
+    auth_buf[p++] = (seq >> 16) & 0xFF;
+    auth_buf[p++] = (seq >> 24) & 0xFF;
+    memcpy(&auth_buf[p], payload, len); p += len;
+    return crc16_calc(auth_buf, p);
+}
 
 uint8_t Buffer[BUFFER_SIZE];
 uint16_t BufferSize = 0;
@@ -83,6 +103,7 @@ static uint32_t invalid_jump = 0;
 typedef struct {
     uint8_t  node_id;
     uint32_t last_seq;
+    uint32_t bitmap;
     uint32_t packets_received;
     uint32_t packets_rejected;
     int8_t   last_rssi;
@@ -146,18 +167,54 @@ static PerNodeState_t* per_node_get_or_create(uint8_t node_id)
     return NULL;
 }
 
+static int check_and_update_seq(PerNodeState_t* t, uint32_t seq)
+{
+    if (seq > t->last_seq) {
+        uint32_t shift = seq - t->last_seq;
+
+        if (shift > WINDOW_SIZE) {
+            printf("[DROP] Jump too large: %lu\r\n", (unsigned long)shift);
+            return 0;
+        }
+
+        if (shift >= WINDOW_SIZE) {
+            t->bitmap = 0;
+        } else {
+            t->bitmap <<= shift;
+        }
+
+        t->bitmap |= 1;
+        t->last_seq = seq;
+        return 1;
+    }
+
+    uint32_t diff = t->last_seq - seq;
+
+    if (diff >= WINDOW_SIZE) {
+        printf("[DROP] Too old\r\n");
+        return 0;
+    }
+
+    if (t->bitmap & (1UL << diff)) {
+        printf("[DROP] Replay\r\n");
+        return 0;
+    }
+
+    t->bitmap |= (1UL << diff);
+    return 1;
+}
+
 static void parse_and_validate_packet(const uint8_t* raw, uint16_t raw_len, ParsedPacket_t* pkt)
 {
     memset(pkt, 0, sizeof(*pkt));
     pkt->valid = 0;
 
     if (raw_len < 9) {
-        snprintf(pkt->reject_reason, sizeof(pkt->reject_reason), "Packet too small (%u < 9)", raw_len);
+        snprintf(pkt->reject_reason, sizeof(pkt->reject_reason), "Packet quá nhỏ (%u)", raw_len);
         return;
     }
 
     int pos = 0;
-
     pkt->node_id = raw[pos++];
 
     pkt->seq = (uint32_t)raw[pos+0]
@@ -170,23 +227,24 @@ static void parse_and_validate_packet(const uint8_t* raw, uint16_t raw_len, Pars
     pos += 2;
 
     if (pkt->payload_len > CHUNK_MAX || pos + pkt->payload_len + 2 > raw_len) {
-        snprintf(pkt->reject_reason, sizeof(pkt->reject_reason), "Invalid payload len (%u)", pkt->payload_len);
+        snprintf(pkt->reject_reason, sizeof(pkt->reject_reason), "Payload len không hợp lệ");
         return;
     }
 
     memcpy(pkt->payload, &raw[pos], pkt->payload_len);
     pos += pkt->payload_len;
-
     pkt->crc = (uint16_t)raw[pos+0] | ((uint16_t)raw[pos+1] << 8);
 
+    // BƯỚC 1: Kiểm tra AUTH TAG (Giữ nguyên như yêu cầu)
     {
-        uint16_t computed_crc = crc16_calc(pkt->payload, pkt->payload_len);
-        if (computed_crc != pkt->crc) {
-            snprintf(pkt->reject_reason, sizeof(pkt->reject_reason), "CRC fail (got 0x%04X)", (unsigned)pkt->crc);
+        uint16_t expected = compute_auth_tag(pkt->node_id, pkt->seq, pkt->payload, pkt->payload_len);
+        if (expected != pkt->crc) {
+            snprintf(pkt->reject_reason, sizeof(pkt->reject_reason), "AUTH FAIL");
             return;
         }
     }
 
+    // BƯỚC 2: Kiểm tra Anti-Replay bằng Sliding Window Bitmap
     {
         PerNodeState_t* node = per_node_get_or_create(pkt->node_id);
         if (!node) {
@@ -194,41 +252,34 @@ static void parse_and_validate_packet(const uint8_t* raw, uint16_t raw_len, Pars
             return;
         }
 
-        if (pkt->seq < node->last_seq) {
-            uint32_t backward_jump = node->last_seq - pkt->seq;
-            printf("[NODE RESET DETECTED] Vehicle=%u: seq jumped backward by %lu (last=%lu, new=%lu)\r\n",
-                   (unsigned)pkt->node_id,
-                   (unsigned long)backward_jump,
-                   (unsigned long)node->last_seq,
-                   (unsigned long)pkt->seq);
-            node->last_seq = pkt->seq;
-            node->packets_received = 0;
-            node->packets_rejected = 0;
-        } else if (pkt->seq <= node->last_seq && !(node->last_seq == 0 && node->packets_received == 0)) {
-            snprintf(pkt->reject_reason, sizeof(pkt->reject_reason),
-                     "Replay: seq %lu <= last %lu",
-                     (unsigned long)(pkt->seq),
-                     (unsigned long)(node->last_seq));
-            node->packets_rejected++;
-            return;
-        }
+        // Node mới (first packet)
+        if (node->packets_received == 0) {
 
-        {
-            uint32_t seq_diff = pkt->seq - node->last_seq;
-            if (seq_diff > MAX_JUMP_THRESHOLD) {
-                snprintf(pkt->reject_reason, sizeof(pkt->reject_reason),
-                         "Jump too large: %lu > %u",
-                         (unsigned long)seq_diff,
-                         MAX_JUMP_THRESHOLD);
+            // (optional) chống attacker gửi seq cực lớn ngay từ đầu
+            if (pkt->seq > 1000000) {
+                snprintf(pkt->reject_reason, sizeof(pkt->reject_reason), "First seq too large");
+                return;
+            }
+
+            node->last_seq = pkt->seq;
+            node->bitmap   = 1;
+            pkt->valid     = 1;
+        }
+        else {
+            if (check_and_update_seq(node, pkt->seq)) {
+                pkt->valid = 1;
+            } else {
+                snprintf(pkt->reject_reason, sizeof(pkt->reject_reason), "Replay/Too old");
                 node->packets_rejected++;
                 return;
             }
         }
 
-        pkt->valid = 1;
-        node->last_seq = pkt->seq;
-        node->last_rssi = (int8_t)RssiValue;
-        node->packets_received++;
+        // Cập nhật thống kê nếu gói hợp lệ
+        if (pkt->valid) {
+            node->last_rssi = (int8_t)RssiValue;
+            node->packets_received++;
+        }
     }
 }
 
